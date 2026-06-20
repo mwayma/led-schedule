@@ -430,20 +430,73 @@ export class OrchestratorService {
       }
 
       // 5. Enforce State (Reconciliation against configuration drift)
-      if (startTime && endTime) {
-        if (this.isTimeInRange(currentTimeStr, startTime, endTime)) {
-          // We are currently INSIDE the active time block for this flow.
-          // Enforce the desired state (but avoid CallApiActions to prevent spam).
-          for (const action of flow.actions) {
-            if (action.type === 'start_effect') {
-              this.handleStartEffect(action as StartEffectAction).catch(err => {
-                console.error(`[Reconciliation] Failed to enforce effect for flow '${flow.name}':`, err.message);
+      // Done outside the loop once to prevent per-flow redundant fetches
+    }
+
+    // Closed-loop dynamic drift reconciliation for all canvases
+    const baseUrl = this.getNDSCPPUrl();
+    axios.get(`${baseUrl}/api/canvases`, { timeout: 2000 })
+      .then(res => {
+        const serverCanvases = res.data || [];
+        const localCanvases = storageService.getCanvases();
+
+        for (const canvas of localCanvases) {
+          // Find all enabled flows targeting this canvas
+          const flowsTargetingCanvas = flows.filter(f => 
+            f.enabled && 
+            f.actions.some(act => act.type === 'start_effect' && (act.properties as any).canvasId === canvas.id)
+          );
+
+          let activeFlow: Flow | null = null;
+          let activeStartAction: StartEffectAction | null = null;
+
+          for (const flow of flowsTargetingCanvas) {
+            const trigger = flow.trigger as TimeTrigger;
+            const { startDate, endDate, startTime, endTime, daysOfWeek } = trigger.properties;
+
+            let flowIsActiveRange = false;
+            if (startTime && endTime) {
+              const dateMatch = !startDate || !endDate || this.isDateInRange(currentDateStr, startDate, endDate);
+              const dayMatch = !daysOfWeek || daysOfWeek.length === 0 || daysOfWeek.includes(currentDayOfWeek);
+              const timeMatch = this.isTimeInRange(currentTimeStr, startTime, endTime);
+              flowIsActiveRange = dateMatch && dayMatch && timeMatch;
+            } else {
+              // Legacy cron flow: active if currently executing
+              flowIsActiveRange = this.activeExecutions.has(flow.id);
+            }
+
+            if (flowIsActiveRange) {
+              activeFlow = flow;
+              activeStartAction = flow.actions.find(act => act.type === 'start_effect' && (act.properties as any).canvasId === canvas.id) as StartEffectAction;
+              break; // Stop at first active flow targeting this canvas
+            }
+          }
+
+          const serverCanvas = serverCanvases.find((c: any) => c.id === canvas.id);
+          const isCurrentlyRunning = serverCanvas?.effectsManager?.running ?? false;
+
+          if (activeStartAction) {
+            // Desired state: RUNNING
+            if (!isCurrentlyRunning) {
+              console.log(`[Reconciliation] Canvas ${canvas.id} (${canvas.name}) should be RUNNING under flow '${activeFlow!.name}', but is stopped on server. Restoring effect...`);
+              this.handleStartEffect(activeStartAction).catch(err => {
+                console.error(`[Reconciliation] Failed to restore effect on canvas ${canvas.id}:`, err.message);
+              });
+            }
+          } else {
+            // Desired state: STOPPED
+            if (isCurrentlyRunning) {
+              console.log(`[Reconciliation] Canvas ${canvas.id} (${canvas.name}) should be STOPPED (no active schedule flows), but is running on server. Stopping effect...`);
+              this.handleStopEffect(canvas.id).catch(err => {
+                console.error(`[Reconciliation] Failed to stop effect on canvas ${canvas.id}:`, err.message);
               });
             }
           }
         }
-      }
-    }
+      })
+      .catch(err => {
+        console.warn(`[Reconciliation] Failed to fetch server canvases for drift correction: ${err.message}`);
+      });
   }
 
   private isDateInRange(currentDate: string, startDate: string, endDate: string): boolean {

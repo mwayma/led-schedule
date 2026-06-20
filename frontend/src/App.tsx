@@ -1609,9 +1609,23 @@ export default function App() {
                         return (
                           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '4px', borderTop: '1px solid rgba(255,255,255,0.03)', paddingTop: '6px' }}>
                             <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                              <Circle size={5} fill="var(--color-primary)" style={{ color: 'var(--color-primary)', animation: 'pulseGlow 2s infinite' }} />
-                              <span style={{ fontSize: '11px', color: 'var(--color-primary)', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                                Running: {canvas.currentEffectName}
+                              <Circle 
+                                size={5} 
+                                fill={effectsMgr?.running ? "var(--color-primary)" : "var(--text-muted)"} 
+                                style={{ 
+                                  color: effectsMgr?.running ? "var(--color-primary)" : "var(--text-muted)", 
+                                  animation: effectsMgr?.running ? 'pulseGlow 2s infinite' : 'none' 
+                                }} 
+                              />
+                              <span style={{ 
+                                fontSize: '11px', 
+                                color: effectsMgr?.running ? 'var(--color-primary)' : 'var(--text-muted)', 
+                                fontWeight: '600', 
+                                overflow: 'hidden', 
+                                textOverflow: 'ellipsis', 
+                                whiteSpace: 'nowrap' 
+                              }}>
+                                {effectsMgr?.running ? `Running: ${canvas.currentEffectName}` : `Stopped: ${canvas.currentEffectName}`}
                               </span>
                             </div>
                             {activeEffect && (
@@ -2599,12 +2613,31 @@ export default function App() {
 
                             return (
                               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '8px' }}>
-                                <div style={{ display: 'flex', gap: '6px', alignItems: 'center', background: 'rgba(0, 242, 254, 0.08)', border: '1px solid rgba(0, 242, 254, 0.2)', padding: '6px 12px', borderRadius: '20px' }}>
-                                  <Circle size={6} fill="var(--color-primary)" style={{ color: 'var(--color-primary)', animation: 'pulseGlow 2s infinite' }} />
-                                  <span style={{ fontSize: '12px', color: 'var(--color-primary)', fontWeight: '600' }}>
-                                    Running: {canvas.currentEffectName}
-                                  </span>
-                                </div>
+                                <div style={{ 
+                                   display: 'flex', 
+                                   gap: '6px', 
+                                   alignItems: 'center', 
+                                   background: effectsMgr?.running ? 'rgba(0, 242, 254, 0.08)' : 'rgba(255, 255, 255, 0.03)', 
+                                   border: effectsMgr?.running ? '1px solid rgba(0, 242, 254, 0.2)' : '1px solid rgba(255, 255, 255, 0.08)', 
+                                   padding: '6px 12px', 
+                                   borderRadius: '20px' 
+                                 }}>
+                                   <Circle 
+                                     size={6} 
+                                     fill={effectsMgr?.running ? "var(--color-primary)" : "var(--text-muted)"} 
+                                     style={{ 
+                                       color: effectsMgr?.running ? "var(--color-primary)" : "var(--text-muted)", 
+                                       animation: effectsMgr?.running ? 'pulseGlow 2s infinite' : 'none' 
+                                     }} 
+                                   />
+                                   <span style={{ 
+                                     fontSize: '12px', 
+                                     color: effectsMgr?.running ? 'var(--color-primary)' : 'var(--text-muted)', 
+                                     fontWeight: '600' 
+                                   }}>
+                                     {effectsMgr?.running ? `Running: ${canvas.currentEffectName}` : `Stopped: ${canvas.currentEffectName}`}
+                                   </span>
+                                 </div>
                                 {activeEffect && (
                                   <div style={{ display: 'flex', gap: '6px' }}>
                                     <button
