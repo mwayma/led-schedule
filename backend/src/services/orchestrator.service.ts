@@ -24,12 +24,12 @@ export class OrchestratorService {
       this.cronTasks.delete(flowId);
     }
 
+    // Clear all sports scoreboard triggers to prevent stale/deleted flows from being polled
+    scoreboardService.clear();
+
     // Load flows from storage
     const flows = storageService.getFlows();
     for (const flow of flows) {
-      // Unregister from scoreboard service first (to clean up)
-      scoreboardService.unregisterFlow(flow.id);
-
       if (!flow.enabled) {
         continue;
       }

@@ -1746,7 +1746,7 @@ export default function App() {
                           let props: any = {};
                           if (val === 'time') props = { cron: '0 18 * * *' };
                           else if (val === 'webhook') props = { token: Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2) };
-                          else if (val === 'sports_score') props = { sport: 'football', league: 'nfl', team: 'Green Bay Packers' };
+                          else if (val === 'sports_score') props = { sport: 'football', league: 'nfl', team: 'Green Bay Packers', scheduleMode: 'auto', manualSchedule: [] };
                           updateFlowTrigger(val, props);
                         }}
                       >
@@ -2101,70 +2101,147 @@ export default function App() {
                         </div>
                       )}
 
-                      {selectedFlow.trigger.type === 'sports_score' && (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-                            <div>
-                              <label>Sport</label>
-                              <select 
-                                value={selectedFlow.trigger.properties.sport}
-                                onChange={e => {
-                                  const sport = e.target.value;
-                                  const league = sport === 'hockey' ? 'nhl' : sport === 'basketball' ? 'nba' : sport === 'soccer' ? 'mls' : 'nfl';
-                                  updateFlowTrigger('sports_score', { ...selectedFlow.trigger.properties, sport, league });
-                                }}
-                              >
-                                <option value="football">Football</option>
-                                <option value="hockey">Hockey</option>
-                                <option value="basketball">Basketball</option>
-                                <option value="soccer">Soccer</option>
-                              </select>
+                      {selectedFlow.trigger.type === 'sports_score' && (() => {
+                        const sportsProps = selectedFlow.trigger.properties as any;
+                        return (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+                              <div>
+                                <label>Sport</label>
+                                <select 
+                                  value={sportsProps.sport}
+                                  onChange={e => {
+                                    const sport = e.target.value;
+                                    const league = sport === 'hockey' ? 'nhl' : sport === 'basketball' ? 'nba' : sport === 'soccer' ? 'mls' : 'nfl';
+                                    updateFlowTrigger('sports_score', { ...sportsProps, sport, league });
+                                  }}
+                                >
+                                  <option value="football">Football</option>
+                                  <option value="hockey">Hockey</option>
+                                  <option value="basketball">Basketball</option>
+                                  <option value="soccer">Soccer</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label>League</label>
+                                <select 
+                                  value={sportsProps.league}
+                                  onChange={e => updateFlowTrigger('sports_score', { ...sportsProps, league: e.target.value })}
+                                >
+                                  {sportsProps.sport === 'football' && (
+                                    <>
+                                      <option value="nfl">NFL</option>
+                                      <option value="college-football">College Football</option>
+                                    </>
+                                  )}
+                                  {sportsProps.sport === 'hockey' && (
+                                    <option value="nhl">NHL</option>
+                                  )}
+                                  {sportsProps.sport === 'basketball' && (
+                                    <>
+                                      <option value="nba">NBA</option>
+                                      <option value="wnba">WNBA</option>
+                                    </>
+                                  )}
+                                  {sportsProps.sport === 'soccer' && (
+                                    <>
+                                      <option value="mls">MLS</option>
+                                      <option value="eng.1">Premier League (England)</option>
+                                      <option value="uefa.champions">Champions League</option>
+                                    </>
+                                  )}
+                                </select>
+                              </div>
                             </div>
                             <div>
-                              <label>League</label>
+                              <label>Team Name (ESPN Spelling)</label>
+                              <input 
+                                type="text"
+                                value={sportsProps.team}
+                                onChange={e => updateFlowTrigger('sports_score', { ...sportsProps, team: e.target.value })}
+                                placeholder="e.g. Green Bay Packers, Chicago Blackhawks"
+                              />
+                              <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'block', marginTop: '4px' }}>
+                                E.g. "Green Bay Packers" or "Chicago Blackhawks". Matches display names.
+                              </span>
+                            </div>
+                            <div>
+                              <label>Schedule Mode</label>
                               <select 
-                                value={selectedFlow.trigger.properties.league}
-                                onChange={e => updateFlowTrigger('sports_score', { ...selectedFlow.trigger.properties, league: e.target.value })}
+                                value={sportsProps.scheduleMode || 'auto'}
+                                onChange={e => updateFlowTrigger('sports_score', { ...sportsProps, scheduleMode: e.target.value as any })}
                               >
-                                {selectedFlow.trigger.properties.sport === 'football' && (
-                                  <>
-                                    <option value="nfl">NFL</option>
-                                    <option value="college-football">College Football</option>
-                                  </>
-                                )}
-                                {selectedFlow.trigger.properties.sport === 'hockey' && (
-                                  <option value="nhl">NHL</option>
-                                )}
-                                {selectedFlow.trigger.properties.sport === 'basketball' && (
-                                  <>
-                                    <option value="nba">NBA</option>
-                                    <option value="wnba">WNBA</option>
-                                  </>
-                                )}
-                                {selectedFlow.trigger.properties.sport === 'soccer' && (
-                                  <>
-                                    <option value="mls">MLS</option>
-                                    <option value="eng.1">Premier League (England)</option>
-                                    <option value="uefa.champions">Champions League</option>
-                                  </>
-                                )}
+                                <option value="auto">Auto (Fetch from ESPN)</option>
+                                <option value="manual">Manual (Input Game Dates)</option>
                               </select>
                             </div>
+                            {(sportsProps.scheduleMode === 'manual') && (
+                              <div style={{ border: '1px solid rgba(255, 255, 255, 0.08)', borderRadius: '6px', padding: '12px', marginTop: '4px', background: 'rgba(0,0,0,0.1)' }}>
+                                <label style={{ display: 'block', marginBottom: '8px', fontSize: '12px', fontWeight: 'bold' }}>Game Schedule (Local Time)</label>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '150px', overflowY: 'auto', marginBottom: '10px' }}>
+                                  {(!sportsProps.manualSchedule || sportsProps.manualSchedule.length === 0) ? (
+                                    <span style={{ fontSize: '11px', color: 'var(--text-muted)' }}>No games scheduled. Add one below.</span>
+                                  ) : (
+                                    sportsProps.manualSchedule.map((gameStr: string, idx: number) => {
+                                      const dateObj = new Date(gameStr);
+                                      return (
+                                        <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', backgroundColor: 'rgba(255, 255, 255, 0.04)', padding: '6px 10px', borderRadius: '4px' }}>
+                                          <span style={{ fontSize: '12px' }}>
+                                            {isNaN(dateObj.getTime()) ? gameStr : dateObj.toLocaleString()}
+                                          </span>
+                                          <button
+                                            type="button"
+                                            style={{ border: 'none', background: 'none', color: '#ff6b6b', cursor: 'pointer', fontSize: '16px', display: 'flex', alignItems: 'center', padding: '2px' }}
+                                            onClick={() => {
+                                              const currentList = sportsProps.manualSchedule || [];
+                                              const newList = currentList.filter((_: any, i: number) => i !== idx);
+                                              updateFlowTrigger('sports_score', {
+                                                ...sportsProps,
+                                                manualSchedule: newList
+                                              });
+                                            }}
+                                            title="Remove Game"
+                                          >
+                                            ×
+                                          </button>
+                                        </div>
+                                      );
+                                    })
+                                  )}
+                                </div>
+                                <div style={{ display: 'flex', gap: '8px' }}>
+                                  <input
+                                    type="datetime-local"
+                                    id="new-manual-game-time"
+                                    style={{ flex: 1, padding: '4px 8px', fontSize: '12px', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.15)', background: '#1c1c1e', color: '#fff' }}
+                                  />
+                                  <button
+                                    type="button"
+                                    className="btn-secondary"
+                                    style={{ padding: '4px 10px', fontSize: '12px' }}
+                                    onClick={() => {
+                                      const inputEl = document.getElementById('new-manual-game-time') as HTMLInputElement;
+                                      if (inputEl && inputEl.value) {
+                                        const isoStr = new Date(inputEl.value).toISOString();
+                                        const currentList = sportsProps.manualSchedule || [];
+                                        if (!currentList.includes(isoStr)) {
+                                          updateFlowTrigger('sports_score', {
+                                            ...sportsProps,
+                                            manualSchedule: [...currentList, isoStr].sort()
+                                          });
+                                        }
+                                        inputEl.value = '';
+                                      }
+                                    }}
+                                  >
+                                    Add Game
+                                  </button>
+                                </div>
+                              </div>
+                            )}
                           </div>
-                          <div>
-                            <label>Team Name (ESPN Spelling)</label>
-                            <input 
-                              type="text"
-                              value={selectedFlow.trigger.properties.team}
-                              onChange={e => updateFlowTrigger('sports_score', { ...selectedFlow.trigger.properties, team: e.target.value })}
-                              placeholder="e.g. Green Bay Packers, Chicago Blackhawks"
-                            />
-                            <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'block', marginTop: '4px' }}>
-                              E.g. "Green Bay Packers" or "Chicago Blackhawks". Matches display names.
-                            </span>
-                          </div>
-                        </div>
-                      )}
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>
@@ -2345,7 +2422,7 @@ export default function App() {
 
                             {flow.trigger.type === 'sports_score' && (
                               <div style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
-                                <span>ESPN: <strong>{(flow.trigger.properties as any).team}</strong> ({(flow.trigger.properties as any).league?.toUpperCase()})</span>
+                                <span>ESPN: <strong>{(flow.trigger.properties as any).team}</strong> ({(flow.trigger.properties as any).league?.toUpperCase()}) - Mode: <strong>{(flow.trigger.properties as any).scheduleMode || 'auto'}</strong></span>
                               </div>
                             )}
 

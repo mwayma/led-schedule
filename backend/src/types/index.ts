@@ -35,6 +35,8 @@ export interface SportsScoreTrigger extends BaseTrigger {
     league: string; // e.g., 'nfl', 'nhl'
     team: string; // e.g., 'Green Bay Packers', 'Chicago Blackhawks'
     pollIntervalSeconds?: number;
+    scheduleMode?: 'auto' | 'manual';
+    manualSchedule?: string[];
   };
 }
 
