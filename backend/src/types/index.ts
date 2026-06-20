@@ -119,6 +119,7 @@ export interface LEDCanvasConfig {
   name: string;
   width: number;
   height: number;
+  fps?: number;
   features: LEDFeatureConfig[];
   unconfigured?: boolean;
 }

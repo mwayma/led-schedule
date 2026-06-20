@@ -6,7 +6,7 @@ import { Flow, Action, StartEffectAction, CallApiAction, TimeTrigger } from '../
 
 export class OrchestratorService {
   private cronTasks: Map<string, cron.ScheduledTask> = new Map();
-  private activeExecutions: Set<string> = new Set(); // Prevent re-entry for same flow
+  private activeExecutions: Map<string, AbortController> = new Map(); // Prevent re-entry or cancel existing execution for same flow
   private minuteTicker: cron.ScheduledTask | null = null;
 
   constructor() {}
@@ -66,8 +66,10 @@ export class OrchestratorService {
 
   public async executeFlow(flowId: string): Promise<void> {
     if (this.activeExecutions.has(flowId)) {
-      console.log(`Flow ${flowId} is already running. Skipping execution.`);
-      return;
+      console.log(`Flow ${flowId} is already running. Cancelling previous execution to restart flow...`);
+      const oldController = this.activeExecutions.get(flowId);
+      oldController?.abort();
+      this.activeExecutions.delete(flowId);
     }
 
     const flow = storageService.getFlow(flowId);
@@ -81,21 +83,32 @@ export class OrchestratorService {
       return;
     }
 
-    this.activeExecutions.add(flowId);
+    const controller = new AbortController();
+    this.activeExecutions.set(flowId, controller);
     console.log(`Starting execution of flow: ${flow.name}`);
 
     try {
-      await this.runActions(flow.actions);
+      await this.runActions(flow.actions, controller.signal);
       console.log(`Successfully completed execution of flow: ${flow.name}`);
     } catch (err: any) {
-      console.error(`Error executing flow ${flow.name}:`, err.message || err);
+      if (err.name === 'AbortError' || err.message === 'Aborted') {
+        console.log(`Flow ${flow.name} execution was aborted.`);
+      } else {
+        console.error(`Error executing flow ${flow.name}:`, err.message || err);
+      }
     } finally {
-      this.activeExecutions.delete(flowId);
+      if (this.activeExecutions.get(flowId) === controller) {
+        this.activeExecutions.delete(flowId);
+      }
     }
   }
 
-  private async runActions(actions: Action[]): Promise<void> {
+  private async runActions(actions: Action[], signal: AbortSignal): Promise<void> {
     for (const action of actions) {
+      if (signal.aborted) {
+        throw new Error('Aborted');
+      }
+
       console.log(`Executing action: ${action.id} (${action.type})`);
       
       switch (action.type) {
@@ -107,7 +120,19 @@ export class OrchestratorService {
           break;
         case 'delay':
           const duration = action.properties.durationSeconds || 5;
-          await new Promise(resolve => setTimeout(resolve, duration * 1000));
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(() => {
+              signal.removeEventListener('abort', onAbort);
+              resolve();
+            }, duration * 1000);
+
+            const onAbort = () => {
+              clearTimeout(timer);
+              reject(new Error('Aborted'));
+            };
+
+            signal.addEventListener('abort', onAbort);
+          });
           break;
         case 'call_api':
           await this.handleCallApi(action as CallApiAction);
@@ -191,6 +216,7 @@ export class OrchestratorService {
 
     // Ensure canvas exists and reconcile its ID
     const canvasId = await this.ensureCanvasOnServer(originalCanvasId);
+    const localCanvas = storageService.getCanvas(originalCanvasId);
 
     try {
       // Try the in-memory PUT endpoint first to avoid socket reset
@@ -252,7 +278,7 @@ export class OrchestratorService {
       // 2. Modify canvas config
       // Replace the effects manager configuration
       canvasConfig.effectsManager = {
-        fps: canvasConfig.effectsManager?.fps || 30,
+        fps: localCanvas?.fps || canvasConfig.effectsManager?.fps || 30,
         running: true,
         currentEffectIndex: 0,
         effects: [
@@ -372,7 +398,7 @@ export class OrchestratorService {
       // 3. Start Time Check
       if (startTime && currentTimeStr === startTime) {
         console.log(`[Granular Scheduler] START Time reached for flow '${flow.name}' (${currentTimeStr}). Running actions...`);
-        this.runActions(flow.actions).catch(err => {
+        this.executeFlow(flow.id).catch(err => {
           console.error(`Error running start actions for flow '${flow.name}':`, err);
         });
       }
@@ -380,8 +406,17 @@ export class OrchestratorService {
       // 4. End Time Check
       if (endTime && currentTimeStr === endTime) {
         console.log(`[Granular Scheduler] END Time reached for flow '${flow.name}' (${currentTimeStr}). Running endActions...`);
+        
+        // Abort the active start execution if any!
+        if (this.activeExecutions.has(flow.id)) {
+          console.log(`[Granular Scheduler] Aborting active start execution for flow '${flow.name}' on end time.`);
+          this.activeExecutions.get(flow.id)?.abort();
+          this.activeExecutions.delete(flow.id);
+        }
+
         if (flow.endActions && flow.endActions.length > 0) {
-          this.runActions(flow.endActions).catch(err => {
+          const endAbortController = new AbortController();
+          this.runActions(flow.endActions, endAbortController.signal).catch(err => {
             console.error(`Error running end actions for flow '${flow.name}':`, err);
           });
         } else {

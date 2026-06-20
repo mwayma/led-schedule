@@ -1,3 +1,6 @@
+import dotenv from 'dotenv';
+dotenv.config();
+
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
@@ -231,37 +234,65 @@ const syncCanvasToServer = async (canvas: LEDCanvasConfig) => {
   const baseUrl = `http://${settings.ndscppHostname}:${settings.ndscppPort}`;
   try {
     // Check if canvas exists on C++ server
+    let serverCanvas: any = null;
     try {
-      await axios.get(`${baseUrl}/api/canvases/${canvas.id}`, { timeout: 2000 });
+      const getRes = await axios.get(`${baseUrl}/api/canvases/${canvas.id}`, { timeout: 2000 });
+      serverCanvas = getRes.data;
     } catch (getErr: any) {
-      if (getErr.response?.status === 404) {
-        // Create canvas target on C++ server
-        const postCanvasPayload = {
-          id: canvas.id,
-          name: canvas.name,
-          width: canvas.width,
-          height: canvas.height
-        };
-        await axios.post(`${baseUrl}/api/canvases`, postCanvasPayload, { timeout: 2000 });
-      } else {
+      if (getErr.response?.status !== 404) {
         throw getErr;
       }
     }
 
-    // Fetch C++ server's canvas to see existing features
-    const getRes = await axios.get(`${baseUrl}/api/canvases/${canvas.id}`, { timeout: 2000 });
-    const serverCanvas = getRes.data;
-    const serverFeatures = serverCanvas.features || [];
+    const localFps = canvas.fps || 30;
+    const serverFps = serverCanvas?.effectsManager?.fps || 30;
 
-    if (canvas.features) {
-      for (const feat of canvas.features) {
-        const exists = serverFeatures.some((sf: any) => sf.friendlyName === feat.friendlyName || sf.hostName === feat.hostName);
-        if (!exists) {
-          // Add feature to C++ server canvas
+    if (!serverCanvas || 
+        serverCanvas.name !== canvas.name || 
+        serverCanvas.width !== canvas.width || 
+        serverCanvas.height !== canvas.height ||
+        serverFps !== localFps) {
+      
+      if (serverCanvas) {
+        console.log(`[Sync] Canvas ${canvas.id} properties changed (Name: ${serverCanvas.name} -> ${canvas.name}, Width: ${serverCanvas.width} -> ${canvas.width}, Height: ${serverCanvas.height} -> ${canvas.height}, FPS: ${serverFps} -> ${localFps}). Deleting and recreating on C++ server.`);
+        try {
+          await axios.delete(`${baseUrl}/api/canvases/${canvas.id}`, { timeout: 2000 });
+        } catch (delErr: any) {
+          console.warn(`[Sync] Failed to delete canvas ${canvas.id} before recreate:`, delErr.message);
+        }
+      }
+
+      // Recreate canvas on C++ server
+      const postCanvasPayload = {
+        id: canvas.id,
+        name: canvas.name,
+        width: canvas.width,
+        height: canvas.height,
+        effectsManager: {
+          fps: localFps
+        }
+      };
+      await axios.post(`${baseUrl}/api/canvases`, postCanvasPayload, { timeout: 2000 });
+
+      // Add all features back since they were deleted
+      if (canvas.features) {
+        for (const feat of canvas.features) {
           await axios.post(`${baseUrl}/api/canvases/${canvas.id}/features`, feat, { timeout: 2000 });
         }
       }
+    } else {
+      // Just ensure any missing features are present
+      const serverFeatures = serverCanvas.features || [];
+      if (canvas.features) {
+        for (const feat of canvas.features) {
+          const exists = serverFeatures.some((sf: any) => sf.friendlyName === feat.friendlyName || sf.hostName === feat.hostName);
+          if (!exists) {
+            await axios.post(`${baseUrl}/api/canvases/${canvas.id}/features`, feat, { timeout: 2000 });
+          }
+        }
+      }
     }
+
     console.log(`[Sync] Successfully synced canvas layout for ID ${canvas.id} (${canvas.name}) to C++ server`);
   } catch (err: any) {
     console.error(`[Sync] Failed to sync canvas layout for ID ${canvas.id} to C++ server:`, err.message);
@@ -355,7 +386,7 @@ app.get('/api/config/canvases', authMiddleware, async (req: Request, res: Respon
 });
 
 app.post('/api/config/canvases', authMiddleware, async (req: Request, res: Response) => {
-  const { id, name, width, height, features } = req.body;
+  const { id, name, width, height, fps, features } = req.body;
   if (typeof id !== 'number' || !name || typeof width !== 'number' || typeof height !== 'number') {
     return res.status(400).json({ error: 'Invalid canvas target fields' });
   }
@@ -365,6 +396,7 @@ app.post('/api/config/canvases', authMiddleware, async (req: Request, res: Respo
     name,
     width,
     height,
+    fps: typeof fps === 'number' ? fps : undefined,
     features: Array.isArray(features) ? features : []
   };
 
@@ -407,11 +439,12 @@ app.put('/api/config/canvases/:id', authMiddleware, async (req: Request, res: Re
     return res.status(404).json({ error: 'Canvas not found locally' });
   }
 
-  const { name, width, height } = req.body;
+  const { name, width, height, fps } = req.body;
   
   if (name !== undefined) canvas.name = name;
   if (width !== undefined) canvas.width = width;
   if (height !== undefined) canvas.height = height;
+  if (fps !== undefined) canvas.fps = fps;
 
   storageService.saveCanvas(canvas);
 

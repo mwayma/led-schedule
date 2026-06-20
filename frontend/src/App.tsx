@@ -138,6 +138,7 @@ export default function App() {
   const [canvasName, setCanvasName] = useState('');
   const [canvasWidth, setCanvasWidth] = useState('144');
   const [canvasHeight, setCanvasHeight] = useState('1');
+  const [canvasFps, setCanvasFps] = useState('30');
 
   const [showAddFeatureModal, setShowAddFeatureModal] = useState(false);
   const [editingFeatureId, setEditingFeatureId] = useState<number | null>(null);
@@ -260,6 +261,7 @@ export default function App() {
     setCanvasName('');
     setCanvasWidth('144');
     setCanvasHeight('1');
+    setCanvasFps('30');
     setShowAddCanvasModal(true);
   };
 
@@ -268,6 +270,7 @@ export default function App() {
     setCanvasName(canvas.name);
     setCanvasWidth(canvas.width.toString());
     setCanvasHeight(canvas.height.toString());
+    setCanvasFps((canvas.fps || canvas.effectsManager?.fps || 30).toString());
     setShowAddCanvasModal(true);
   };
 
@@ -287,7 +290,8 @@ export default function App() {
           body: JSON.stringify({
             name: canvasName,
             width: parseInt(canvasWidth) || 1,
-            height: parseInt(canvasHeight) || 1
+            height: parseInt(canvasHeight) || 1,
+            fps: parseInt(canvasFps) || 30
           })
         });
         if (res.ok) {
@@ -308,7 +312,8 @@ export default function App() {
             id: nextId,
             name: canvasName,
             width: parseInt(canvasWidth) || 1,
-            height: parseInt(canvasHeight) || 1
+            height: parseInt(canvasHeight) || 1,
+            fps: parseInt(canvasFps) || 30
           })
         });
         if (res.ok) {
@@ -338,6 +343,7 @@ export default function App() {
           name: canvas.name,
           width: canvas.width,
           height: canvas.height,
+          fps: canvas.fps || canvas.effectsManager?.fps || 30,
           features: canvas.features || []
         })
       });
@@ -2197,7 +2203,10 @@ export default function App() {
                   width={previewWidth}
                   height={previewHeight}
                   effect={previewEffect}
-                  fps={30}
+                  fps={(() => {
+                    const matchingCanvas = canvases.find(c => c.width === previewWidth && c.height === previewHeight);
+                    return matchingCanvas?.fps || matchingCanvas?.effectsManager?.fps || 30;
+                  })()}
                 />
                 
                 <div className="glass-panel" style={{ padding: '16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
@@ -2377,7 +2386,10 @@ export default function App() {
                 width={previewWidth}
                 height={previewHeight}
                 effect={previewEffect}
-                fps={30}
+                fps={(() => {
+                  const matchingCanvas = canvases.find(c => c.width === previewWidth && c.height === previewHeight);
+                  return matchingCanvas?.fps || matchingCanvas?.effectsManager?.fps || 30;
+                })()}
               />
               
               <div className="glass-panel" style={{ padding: '16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
@@ -2538,7 +2550,7 @@ export default function App() {
                               )}
                             </div>
                             <span style={{ fontSize: '12px', color: 'var(--text-muted)' }}>
-                              Resolution: {canvas.width}x{canvas.height} LEDs
+                              Resolution: {canvas.width}x{canvas.height} LEDs | Configured Rate: {canvas.fps || canvas.effectsManager?.fps || 30} FPS
                             </span>
                           </div>
                           
@@ -2751,7 +2763,10 @@ export default function App() {
                 width={previewWidth}
                 height={previewHeight}
                 effect={previewEffect}
-                fps={30}
+                fps={(() => {
+                  const matchingCanvas = canvases.find(c => c.width === previewWidth && c.height === previewHeight);
+                  return matchingCanvas?.fps || matchingCanvas?.effectsManager?.fps || 30;
+                })()}
               />
               
               <div className="glass-panel" style={{ padding: '16px', fontSize: '12px', color: 'var(--text-secondary)' }}>
@@ -2868,6 +2883,18 @@ export default function App() {
                     value={canvasHeight}
                     onChange={e => setCanvasHeight(e.target.value)}
                     min="1"
+                    required
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <label htmlFor="canvas-fps">Target FPS</label>
+                  <input
+                    id="canvas-fps"
+                    type="number"
+                    value={canvasFps}
+                    onChange={e => setCanvasFps(e.target.value)}
+                    min="1"
+                    max="120"
                     required
                   />
                 </div>

@@ -1,6 +1,6 @@
 version: v1
 settings:
-  ndscppHostname: 192.168.1.100
+  ndscppHostname: blink.waymack.home
   ndscppPort: 80
 flows:
   - id: flow_1781922178232
@@ -9,7 +9,12 @@ flows:
     trigger:
       type: time
       properties:
-        cron: 0 18 * * *
+        cron: ''
+        startTime: '18:00'
+        endTime: '22:00'
+        startDate: 01-01
+        endDate: 12-31
+        daysOfWeek: []
     actions:
       - id: act_1781922178232
         type: start_effect
@@ -38,14 +43,6 @@ flows:
                   r: 0
             rampedColor: false
             type: 13PaletteEffect
-      - id: act_1781922184126
-        type: delay
-        properties:
-          durationSeconds: 14400
-      - id: act_1781922189406
-        type: stop_effect
-        properties:
-          canvasId: 0
 canvases:
   - id: 0
     name: Exterior
@@ -78,3 +75,4 @@ canvases:
           sequenceNumber: 17932
           watts: 2
           wifiSignal: -64
+    fps: 27

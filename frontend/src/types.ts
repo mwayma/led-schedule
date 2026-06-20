@@ -134,6 +134,7 @@ export interface LEDCanvas {
   name: string;
   width: number;
   height: number;
+  fps?: number;
   currentEffectName?: string;
   features: LEDFeature[];
   unconfigured?: boolean;
