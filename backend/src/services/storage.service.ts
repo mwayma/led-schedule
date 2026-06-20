@@ -41,6 +41,7 @@ export class StorageService {
         settings: {
           ndscppHostname: defaults.hostname,
           ndscppPort: defaults.port,
+          timezone: ''
         },
         flows: [],
         canvases: []
@@ -61,6 +62,7 @@ export class StorageService {
         settings: {
           ndscppHostname: doc.settings?.ndscppHostname || defaults.hostname,
           ndscppPort: doc.settings?.ndscppPort || defaults.port,
+          timezone: doc.settings?.timezone || ''
         },
         flows: Array.isArray(doc.flows) ? doc.flows : [],
         canvases: Array.isArray(doc.canvases) ? doc.canvases : []
@@ -76,6 +78,7 @@ export class StorageService {
         settings: {
           ndscppHostname: defaults.hostname,
           ndscppPort: defaults.port,
+          timezone: ''
         },
         flows: [],
         canvases: []

@@ -149,13 +149,13 @@ app.get('/api/settings', authMiddleware, (req: Request, res: Response) => {
 });
 
 app.post('/api/settings', authMiddleware, (req: Request, res: Response) => {
-  const { ndscppHostname, ndscppPort } = req.body;
+  const { ndscppHostname, ndscppPort, timezone } = req.body;
 
   if (!ndscppHostname || typeof ndscppPort !== 'number') {
     return res.status(400).json({ error: 'Invalid settings configuration' });
   }
 
-  const newSettings = storageService.updateSettings({ ndscppHostname, ndscppPort });
+  const newSettings = storageService.updateSettings({ ndscppHostname, ndscppPort, timezone });
   orchestratorService.reloadAllTriggers();
   
   return res.json({ success: true, settings: newSettings });

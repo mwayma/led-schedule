@@ -115,6 +115,7 @@ export default function App() {
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [settingsHost, setSettingsHost] = useState('');
   const [settingsPort, setSettingsPort] = useState(7777);
+  const [settingsTimezone, setSettingsTimezone] = useState('');
 
   // Flows
   const [flows, setFlows] = useState<Flow[]>([]);
@@ -222,6 +223,7 @@ export default function App() {
         setSettings(settingsData);
         setSettingsHost(settingsData.ndscppHostname);
         setSettingsPort(settingsData.ndscppPort);
+        setSettingsTimezone(settingsData.timezone || '');
       }
 
       // Load flows
@@ -506,10 +508,10 @@ export default function App() {
       const res = await fetch(`${API_BASE}/api/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ndscppHostname: settingsHost, ndscppPort: settingsPort })
+        body: JSON.stringify({ ndscppHostname: settingsHost, ndscppPort: settingsPort, timezone: settingsTimezone })
       });
       if (res.ok) {
-        setSettings({ ndscppHostname: settingsHost, ndscppPort: settingsPort });
+        setSettings({ ndscppHostname: settingsHost, ndscppPort: settingsPort, timezone: settingsTimezone });
         setShowSettingsModal(false);
         loadServerStatus();
       }
@@ -1405,7 +1407,12 @@ export default function App() {
             </span>
           </div>
           <div style={{ display: 'flex', gap: '6px' }}>
-            <button className="btn-icon" onClick={() => setShowSettingsModal(true)} title="Settings">
+            <button className="btn-icon" onClick={() => {
+              setSettingsHost(settings.ndscppHostname);
+              setSettingsPort(settings.ndscppPort);
+              setSettingsTimezone(settings.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone);
+              setShowSettingsModal(true);
+            }} title="Settings">
               <Settings size={16} />
             </button>
             <button className="btn-icon" onClick={handleLogout} title="Log Out">
@@ -2932,6 +2939,33 @@ export default function App() {
                   placeholder="e.g. 7777"
                   required
                 />
+              </div>
+
+              <div>
+                <label htmlFor="settings-timezone">System Timezone</label>
+                <input
+                  id="settings-timezone"
+                  type="text"
+                  list="timezone-list"
+                  value={settingsTimezone}
+                  onChange={e => setSettingsTimezone(e.target.value)}
+                  placeholder="e.g. America/Chicago, UTC"
+                  required
+                />
+                <datalist id="timezone-list">
+                  <option value="UTC" />
+                  <option value="America/New_York" />
+                  <option value="America/Chicago" />
+                  <option value="America/Denver" />
+                  <option value="America/Los_Angeles" />
+                  <option value="Europe/London" />
+                  <option value="Europe/Paris" />
+                  <option value="Asia/Tokyo" />
+                  <option value="Australia/Sydney" />
+                </datalist>
+                <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'block', marginTop: '4px' }}>
+                  Used to evaluate schedule triggers. Defaults to the browser's timezone.
+                </span>
               </div>
 
               <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '10px' }}>

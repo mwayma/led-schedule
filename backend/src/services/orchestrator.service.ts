@@ -361,15 +361,54 @@ export class OrchestratorService {
 
   private checkTimeTriggerTick(): void {
     const now = new Date();
-    const localHour = now.getHours().toString().padStart(2, '0');
-    const localMinute = now.getMinutes().toString().padStart(2, '0');
+    let localHour: string;
+    let localMinute: string;
+    let currentDateStr: string;
+    let currentDayOfWeek: number;
+
+    const tz = storageService.getSettings().timezone;
+    if (tz) {
+      try {
+        const formatter = new Intl.DateTimeFormat('en-US', {
+          timeZone: tz,
+          hour: '2-digit',
+          minute: '2-digit',
+          month: '2-digit',
+          day: '2-digit',
+          hour12: false
+        });
+        const parts = formatter.formatToParts(now);
+        
+        const hour = parts.find(p => p.type === 'hour')?.value || '00';
+        const minute = parts.find(p => p.type === 'minute')?.value || '00';
+        const month = parts.find(p => p.type === 'month')?.value || '01';
+        const day = parts.find(p => p.type === 'day')?.value || '01';
+        
+        localHour = hour.padStart(2, '0');
+        localMinute = minute.padStart(2, '0');
+        currentDateStr = `${month}-${day}`;
+        
+        const weekdayShort = now.toLocaleString('en-US', { timeZone: tz, weekday: 'short' });
+        const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        currentDayOfWeek = days.indexOf(weekdayShort);
+        if (currentDayOfWeek === -1) {
+          currentDayOfWeek = now.getDay();
+        }
+      } catch (err) {
+        console.error(`Invalid timezone configured: ${tz}. Falling back to server local time.`, err);
+        localHour = now.getHours().toString().padStart(2, '0');
+        localMinute = now.getMinutes().toString().padStart(2, '0');
+        currentDateStr = `${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
+        currentDayOfWeek = now.getDay();
+      }
+    } else {
+      localHour = now.getHours().toString().padStart(2, '0');
+      localMinute = now.getMinutes().toString().padStart(2, '0');
+      currentDateStr = `${(now.getMonth() + 1).toString().padStart(2, '0')}-${now.getDate().toString().padStart(2, '0')}`;
+      currentDayOfWeek = now.getDay();
+    }
+
     const currentTimeStr = `${localHour}:${localMinute}`;
-
-    const localMonth = (now.getMonth() + 1).toString().padStart(2, '0');
-    const localDay = now.getDate().toString().padStart(2, '0');
-    const currentDateStr = `${localMonth}-${localDay}`;
-
-    const currentDayOfWeek = now.getDay();
 
     const flows = storageService.getFlows();
     for (const flow of flows) {

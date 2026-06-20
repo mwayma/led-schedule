@@ -99,6 +99,7 @@ export interface Flow {
 export interface SystemSettings {
   ndscppHostname: string;
   ndscppPort: number;
+  timezone?: string;
 }
 
 // C++ Server models
