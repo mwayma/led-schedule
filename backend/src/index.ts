@@ -35,7 +35,18 @@ const getAdminVerifier = (): ((password: string) => boolean) => {
     return (password: string) => bcrypt.compareSync(password, envHash);
   } else if (envPlain) {
     console.log('Admin password security: Using ADMIN_PASSWORD plain-text from environment.');
-    return (password: string) => password === envPlain;
+    let decodedPlain = envPlain;
+    try {
+      // Decode if it looks like a valid base64-encoded string
+      if (/^[A-Za-z0-9+/=]+$/.test(envPlain) && envPlain.length % 4 === 0) {
+        const decoded = Buffer.from(envPlain, 'base64').toString('utf8');
+        // Sanity check to ensure decoded value is printable ASCII/whitespace
+        if (/^[\x20-\x7E\s]*$/.test(decoded)) {
+          decodedPlain = decoded;
+        }
+      }
+    } catch (e) {}
+    return (password: string) => password === envPlain || password === decodedPlain;
   } else {
     console.warn('================================================================');
     console.warn('[WARNING] No ADMIN_PASSWORD or ADMIN_PASSWORD_HASH environment');
