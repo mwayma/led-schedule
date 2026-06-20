@@ -33,6 +33,184 @@ import type { Flow, Action, Trigger, LEDCanvas, SystemSettings, ActionType, Trig
 // API Base URL (assumes same host in dev/production proxy, but fallback to port 5000 in dev)
 const API_BASE = '';
 
+// Helper to get offset minutes for a timezone today
+const getTzOffsetMinutes = (date: Date, tz: string) => {
+  try {
+    const tzStr = date.toLocaleString('en-US', { timeZone: tz, hour12: false });
+    const utcStr = date.toLocaleString('en-US', { timeZone: 'UTC', hour12: false });
+    const tzDate = new Date(tzStr);
+    const utcDate = new Date(utcStr);
+    return Math.round((tzDate.getTime() - utcDate.getTime()) / 60000);
+  } catch (e) {
+    return -date.getTimezoneOffset(); // fallback to local browser offset
+  }
+};
+
+// Convert a time string and optionally shift days of week
+const convertTimeAndDays = (
+  timeStr: string,
+  daysOfWeek: number[] | undefined,
+  fromTz: string,
+  toTz: string
+): { time: string; daysOfWeek?: number[] } => {
+  if (!timeStr) return { time: '' };
+  
+  const fromTzClean = fromTz || 'UTC';
+  const toTzClean = toTz || Intl.DateTimeFormat().resolvedOptions().timeZone;
+  
+  if (fromTzClean === toTzClean) {
+    return { time: timeStr, daysOfWeek };
+  }
+  
+  const [hours, minutes] = timeStr.split(':').map(Number);
+  const now = new Date();
+  
+  const fromOffset = getTzOffsetMinutes(now, fromTzClean);
+  const toOffset = getTzOffsetMinutes(now, toTzClean);
+  const shiftMinutes = toOffset - fromOffset;
+  
+  let totalMinutes = hours * 60 + minutes + shiftMinutes;
+  let dayShift = 0;
+  
+  if (totalMinutes >= 1440) {
+    dayShift = 1;
+  } else if (totalMinutes < 0) {
+    dayShift = -1;
+  }
+  
+  totalMinutes = (totalMinutes % 1440 + 1440) % 1440;
+  const shiftedHours = Math.floor(totalMinutes / 60);
+  const shiftedMinutes = totalMinutes % 60;
+  
+  const newTimeStr = `${shiftedHours.toString().padStart(2, '0')}:${shiftedMinutes.toString().padStart(2, '0')}`;
+  
+  if (daysOfWeek && daysOfWeek.length > 0 && dayShift !== 0) {
+    const newDays = daysOfWeek.map(d => (d + dayShift + 7) % 7).sort();
+    return { time: newTimeStr, daysOfWeek: newDays };
+  }
+  
+  return { time: newTimeStr, daysOfWeek };
+};
+
+const prepareFlowForEdit = (flow: Flow, systemTz: string): Flow => {
+  if (flow.trigger.type !== 'time') return flow;
+  
+  const triggerProps = flow.trigger.properties as any;
+  if (triggerProps.startTime === undefined) return flow; // simple cron
+  
+  const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const systemTzClean = systemTz || 'UTC';
+  
+  const convertedStart = convertTimeAndDays(
+    triggerProps.startTime,
+    triggerProps.daysOfWeek,
+    systemTzClean,
+    browserTz
+  );
+  
+  const convertedEnd = convertTimeAndDays(
+    triggerProps.endTime,
+    undefined,
+    systemTzClean,
+    browserTz
+  );
+  
+  return {
+    ...flow,
+    trigger: {
+      ...flow.trigger,
+      properties: {
+        ...triggerProps,
+        startTime: convertedStart.time,
+        endTime: convertedEnd.time,
+        daysOfWeek: convertedStart.daysOfWeek || triggerProps.daysOfWeek
+      }
+    }
+  };
+};
+
+const prepareFlowForSave = (flow: Flow, systemTz: string): Flow => {
+  if (flow.trigger.type !== 'time') return flow;
+  
+  const triggerProps = flow.trigger.properties as any;
+  if (triggerProps.startTime === undefined) return flow; // simple cron
+  
+  const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const systemTzClean = systemTz || 'UTC';
+  
+  // Convert browser timezone back to system timezone
+  const convertedStart = convertTimeAndDays(
+    triggerProps.startTime,
+    triggerProps.daysOfWeek,
+    browserTz,
+    systemTzClean
+  );
+  
+  const convertedEnd = convertTimeAndDays(
+    triggerProps.endTime,
+    undefined,
+    browserTz,
+    systemTzClean
+  );
+  
+  return {
+    ...flow,
+    trigger: {
+      ...flow.trigger,
+      properties: {
+        ...triggerProps,
+        startTime: convertedStart.time,
+        endTime: convertedEnd.time,
+        daysOfWeek: convertedStart.daysOfWeek || triggerProps.daysOfWeek
+      }
+    }
+  };
+};
+
+const getDisplayScheduleText = (flow: Flow, systemTz: string) => {
+  if (flow.trigger.type !== 'time') return '';
+  const triggerProps = flow.trigger.properties as any;
+  const isGranular = triggerProps.startTime !== undefined;
+  
+  if (!isGranular) {
+    return `Cron: ${triggerProps.cron}`;
+  }
+  
+  const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const systemTzClean = systemTz || 'UTC';
+  
+  const convertedStart = convertTimeAndDays(
+    triggerProps.startTime,
+    triggerProps.daysOfWeek,
+    systemTzClean,
+    browserTz
+  );
+  
+  const convertedEnd = convertTimeAndDays(
+    triggerProps.endTime,
+    undefined,
+    systemTzClean,
+    browserTz
+  );
+  
+  const daysList = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const dayNames = (convertedStart.daysOfWeek || [])
+    .map(d => daysList[d])
+    .join(', ');
+    
+  const dateRangeStr = triggerProps.startDate 
+    ? ` (${triggerProps.startDate} to ${triggerProps.endDate})` 
+    : '';
+    
+  let tzAbbrev = '';
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short', timeZone: browserTz }).formatToParts(new Date());
+    tzAbbrev = ' ' + (parts.find(p => p.type === 'timeZoneName')?.value || '');
+  } catch (e) {}
+
+  return `${convertedStart.time} - ${convertedEnd.time}${tzAbbrev}${dayNames ? ` on [${dayNames}]` : ''}${dateRangeStr}`;
+};
+
 // Helper to parse standard cron expressions into visual UI selections
 const parseCron = (cronStr: string) => {
   const parts = (cronStr || '0 18 * * *').split(' ');
@@ -522,22 +700,23 @@ export default function App() {
 
   const handleSaveFlow = async (flow: Flow) => {
     try {
+      const flowToSave = prepareFlowForSave(flow, settings.timezone || 'UTC');
       const res = await fetch(`${API_BASE}/api/flows`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(flow)
+        body: JSON.stringify(flowToSave)
       });
       if (res.ok) {
         await res.json();
         // Update list
         setFlows(prev => {
-          const idx = prev.findIndex(f => f.id === flow.id);
+          const idx = prev.findIndex(f => f.id === flowToSave.id);
           if (idx >= 0) {
             const updated = [...prev];
-            updated[idx] = flow;
+            updated[idx] = flowToSave;
             return updated;
           }
-          return [...prev, flow];
+          return [...prev, flowToSave];
         });
         
         // Flash success
@@ -1516,7 +1695,7 @@ export default function App() {
                       <div 
                         key={flow.id}
                         className="glass-panel"
-                        onClick={() => setSelectedFlow(flow)}
+                        onClick={() => setSelectedFlow(prepareFlowForEdit(flow, settings.timezone || 'UTC'))}
                         style={{ 
                           padding: '12px 14px', 
                           cursor: 'pointer',
@@ -1768,6 +1947,13 @@ export default function App() {
                       {selectedFlow.trigger.type === 'time' && (() => {
                         const triggerProps = selectedFlow.trigger.properties as any;
                         const isGranular = triggerProps.startTime !== undefined;
+                        
+                        const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+                        let tzAbbrev = '';
+                        try {
+                          const parts = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short', timeZone: browserTz }).formatToParts(new Date());
+                          tzAbbrev = ' (' + (parts.find(p => p.type === 'timeZoneName')?.value || '') + ')';
+                        } catch (e) {}
 
                         if (!isGranular) {
                           // Simple/Legacy Cron Frequency UI
@@ -1964,10 +2150,9 @@ export default function App() {
                                 </button>
                               </div>
 
-                              {/* Times Row */}
                               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
                                 <div>
-                                  <label>Start Time (ON)</label>
+                                  <label>Start Time (ON){tzAbbrev}</label>
                                   <input
                                     type="time"
                                     value={startTime}
@@ -1975,7 +2160,7 @@ export default function App() {
                                   />
                                 </div>
                                 <div>
-                                  <label>End Time (OFF)</label>
+                                  <label>End Time (OFF){tzAbbrev}</label>
                                   <input
                                     type="time"
                                     value={endTime}
@@ -2416,14 +2601,7 @@ export default function App() {
                             
                             {flow.trigger.type === 'time' && (
                               <div style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
-                                {(flow.trigger.properties as any).startTime ? (
-                                  <span>
-                                    {(flow.trigger.properties as any).startTime} - {(flow.trigger.properties as any).endTime}
-                                    {(flow.trigger.properties as any).startDate ? ` (${(flow.trigger.properties as any).startDate} to ${(flow.trigger.properties as any).endDate})` : ''}
-                                  </span>
-                                ) : (
-                                  <span>Cron: <code>{(flow.trigger.properties as any).cron}</code></span>
-                                )}
+                                <span>{getDisplayScheduleText(flow, settings.timezone || 'UTC')}</span>
                               </div>
                             )}
 
@@ -2450,7 +2628,7 @@ export default function App() {
                           <button 
                             className="btn-secondary" 
                             style={{ flex: 1, padding: '6px 12px', fontSize: '12px', justifyContent: 'center' }} 
-                            onClick={() => setSelectedFlow(flow)}
+                            onClick={() => setSelectedFlow(prepareFlowForEdit(flow, settings.timezone || 'UTC'))}
                           >
                             Edit Flow
                           </button>
