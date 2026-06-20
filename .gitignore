@@ -1,0 +1,24 @@
+# Local source repositories (cloned for reference)
+ndscpp-src/
+nightdriverstrip-src/
+
+# Node dependencies and build folders
+node_modules/
+dist/
+build/
+.env
+.env.local
+.env.*.local
+
+# Logs and databases
+*.log
+*.sqlite
+*.db
+
+# Kubernetes local configurations
+kubeconfig
+*.kubeconfig
+
+# OS Metadata
+.DS_Store
+Thumbs.db

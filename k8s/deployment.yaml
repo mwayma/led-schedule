@@ -1,0 +1,114 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: led-schedule-backend
+  labels:
+    app: led-schedule
+    component: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: led-schedule
+      component: backend
+  template:
+    metadata:
+      labels:
+        app: led-schedule
+        component: backend
+    spec:
+      containers:
+        - name: backend
+          image: led-schedule-backend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+              name: http
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: DATA_DIR
+              value: "/app/data"
+            # Target the in-cluster service name for the C++ server in production
+            - name: NDSCPP_HOST
+              value: "ndscpp-service"
+            - name: NDSCPP_PORT
+              value: "7777"
+            - name: ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: led-schedule-secrets
+                  key: ADMIN_PASSWORD
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: led-schedule-secrets
+                  key: JWT_SECRET
+          volumeMounts:
+            - name: data-storage
+              mountPath: /app/data
+      volumes:
+        - name: data-storage
+          persistentVolumeClaim:
+            claimName: led-schedule-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: led-schedule-backend-service
+  labels:
+    app: led-schedule
+    component: backend
+spec:
+  ports:
+    - port: 5000
+      targetPort: 5000
+      name: http
+  selector:
+    app: led-schedule
+    component: backend
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: led-schedule-frontend
+  labels:
+    app: led-schedule
+    component: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: led-schedule
+      component: frontend
+  template:
+    metadata:
+      labels:
+        app: led-schedule
+        component: frontend
+    spec:
+      containers:
+        - name: frontend
+          image: led-schedule-frontend:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 80
+              name: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: led-schedule-frontend-service
+  labels:
+    app: led-schedule
+    component: frontend
+spec:
+  ports:
+    - port: 80
+      targetPort: 80
+      name: http
+  selector:
+    app: led-schedule
+    component: frontend
+  type: ClusterIP

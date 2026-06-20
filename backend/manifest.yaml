@@ -1,0 +1,80 @@
+version: v1
+settings:
+  ndscppHostname: 192.168.1.100
+  ndscppPort: 80
+flows:
+  - id: flow_1781922178232
+    name: Imported Flow (July Fourth Lights Scroll)
+    enabled: true
+    trigger:
+      type: time
+      properties:
+        cron: 0 18 * * *
+    actions:
+      - id: act_1781922178232
+        type: start_effect
+        properties:
+          canvasId: 0
+          effect:
+            brightness: 1
+            density: 1
+            dotSize: 4
+            everyNthDot: 16
+            ledColorPerSecond: 0
+            ledScrollSpeed: 5
+            mirrored: false
+            name: July Fourth Lights Scroll
+            palette:
+              blend: false
+              colors:
+                - b: 0
+                  g: 0
+                  r: 255
+                - b: 75
+                  g: 75
+                  r: 75
+                - b: 255
+                  g: 0
+                  r: 0
+            rampedColor: false
+            type: 13PaletteEffect
+      - id: act_1781922184126
+        type: delay
+        properties:
+          durationSeconds: 14400
+      - id: act_1781922189406
+        type: stop_effect
+        properties:
+          canvasId: 0
+canvases:
+  - id: 0
+    name: Exterior
+    width: 144
+    height: 1
+    features:
+      - id: 0
+        friendlyName: Exterior
+        hostName: 192.168.1.185
+        port: 49152
+        width: 144
+        height: 1
+        offsetX: 0
+        offsetY: 0
+        reversed: false
+        channel: 0
+        redGreenSwap: false
+        clientBufferCount: 24
+        isConnected: true
+        lastClientResponse:
+          brightness: 80
+          bufferPos: 3
+          bufferSize: 24
+          currentClock: 1781922169.136918
+          flashVersion: 40
+          fpsDrawing: 27
+          newestPacket: 6.863013982772827
+          oldestPacket: 6.863040924072266
+          responseSize: 72
+          sequenceNumber: 17932
+          watts: 2
+          wifiSignal: -64

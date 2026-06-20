@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ndscpp-server
+  labels:
+    app: ndscpp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ndscpp
+  template:
+    metadata:
+      labels:
+        app: ndscpp
+    spec:
+      containers:
+        - name: ndscpp
+          # Example image tag (replace with your custom compiled NDSCPP container image)
+          image: plummerssoftware/ndscpp:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            # REST API webserver port
+            - containerPort: 7777
+              name: api
+            # UDP Socket channel port (drives ESP32 controllers)
+            - containerPort: 49152
+              protocol: UDP
+              name: socket-udp
+          volumeMounts:
+            - name: config-volume
+              mountPath: /app/config
+      volumes:
+        - name: config-volume
+          configMap:
+            name: ndscpp-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ndscpp-service
+  labels:
+    app: ndscpp
+spec:
+  ports:
+    - port: 7777
+      targetPort: 7777
+      name: api
+    - port: 49152
+      targetPort: 49152
+      protocol: UDP
+      name: socket-udp
+  selector:
+    app: ndscpp
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ndscpp-config
+  labels:
+    app: ndscpp
+data:
+  # Pre-populate server config with a sample layout matching the home
+  config.led: |
+    [
+      {
+        "id": 1,
+        "name": "Main Canvas",
+        "width": 144,
+        "height": 1,
+        "features": [
+          {
+            "id": 0,
+            "friendlyName": "Living Room LED",
+            "hostName": "192.168.1.186",
+            "port": 49152,
+            "channel": 0,
+            "width": 144,
+            "height": 1,
+            "offsetX": 0,
+            "offsetY": 0,
+            "redGreenSwap": false,
+            "reversed": false
+          }
+        ]
+      }
+    ]
