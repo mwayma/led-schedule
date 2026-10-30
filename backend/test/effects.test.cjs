@@ -113,3 +113,26 @@ test('all Halloween presets satisfy the strict palette deserializer', () => {
     assert.ok(effect.palette.colors.every(c => Object.values(c).every(v => v >= 0 && v <= 255)));
   }
 });
+
+test('October 31 overnight run stops at November 1 midnight Central, never starts in November', async () => {
+  const { service, requests, flows, context } = orchestrator();
+  let current = '2026-11-01T05:00:00Z';
+  context.Date = class extends Date { constructor(...args) { super(...(args.length ? args : [current])); } };
+  flows.push({ id: 'october', name: 'October nights', enabled: true,
+    trigger: { type: 'time', properties: { startDate: '10-01', endDate: '10-31', startTime: '17:45', endTime: '00:00' } },
+    actions: [{ id: 'on', type: 'start_effect', properties: { canvasId: 1, effect: { type: '15StarfieldEffect', name: 'Ghost' } } }],
+    endActions: [{ id: 'off', type: 'stop_effect', properties: { canvasId: 1 } }] });
+  service.checkTimeTriggerTick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][1], 'http://ndscpp:7777/api/canvases/stop');
+  requests.length = 0;
+  current = '2026-11-01T23:45:00Z';
+  service.checkTimeTriggerTick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 0);
+  current = '2026-10-01T05:00:00Z';
+  service.checkTimeTriggerTick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 0, 'no September 30 occurrence to end');
+});

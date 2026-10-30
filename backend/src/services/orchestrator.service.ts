@@ -381,6 +381,7 @@ export class OrchestratorService {
 
   private checkTimeTriggerTick(): void {
     const now = new Date();
+    let localYear = now.getFullYear();
     let localHour: string;
     let localMinute: string;
     let currentDateStr: string;
@@ -395,9 +396,11 @@ export class OrchestratorService {
           minute: '2-digit',
           month: '2-digit',
           day: '2-digit',
-          hour12: false
+          year: 'numeric',
+          hourCycle: 'h23'
         });
         const parts = formatter.formatToParts(now);
+        localYear = Number(parts.find(p => p.type === 'year')?.value || localYear);
         
         const hour = parts.find(p => p.type === 'hour')?.value || '00';
         const minute = parts.find(p => p.type === 'minute')?.value || '00';
@@ -429,6 +432,10 @@ export class OrchestratorService {
     }
 
     const currentTimeStr = `${localHour}:${localMinute}`;
+    const [localMonth, localDay] = currentDateStr.split('-').map(Number);
+    const previousDate = new Date(Date.UTC(localYear, localMonth - 1, localDay - 1));
+    const previousDateStr = `${(previousDate.getUTCMonth() + 1).toString().padStart(2, '0')}-${previousDate.getUTCDate().toString().padStart(2, '0')}`;
+    const previousDayOfWeek = (currentDayOfWeek + 6) % 7;
 
     const flows = storageService.getFlows();
     for (const flow of flows) {
@@ -440,22 +447,13 @@ export class OrchestratorService {
       // Only evaluate if startTime or endTime is defined
       if (!startTime && !endTime) continue;
 
-      // 1. Date Range Check
-      if (startDate && endDate) {
-        if (!this.isDateInRange(currentDateStr, startDate, endDate)) {
-          continue;
-        }
-      }
-
-      // 2. Day of Week Check
-      if (daysOfWeek && daysOfWeek.length > 0) {
-        if (!daysOfWeek.includes(currentDayOfWeek)) {
-          continue;
-        }
-      }
+      const eligible = (date: string, day: number) =>
+        (!startDate || !endDate || this.isDateInRange(date, startDate, endDate)) &&
+        (!daysOfWeek?.length || daysOfWeek.includes(day));
+      const overnight = !!startTime && !!endTime && startTime > endTime;
 
       // 3. Start Time Check
-      if (startTime && currentTimeStr === startTime) {
+      if (startTime && currentTimeStr === startTime && eligible(currentDateStr, currentDayOfWeek)) {
         console.log(`[Granular Scheduler] START Time reached for flow '${flow.name}' (${currentTimeStr}). Running actions...`);
         this.executeFlow(flow.id).catch(err => {
           console.error(`Error running start actions for flow '${flow.name}':`, err);
@@ -463,7 +461,10 @@ export class OrchestratorService {
       }
 
       // 4. End Time Check
-      if (endTime && currentTimeStr === endTime) {
+      if (endTime && currentTimeStr === endTime && eligible(
+        overnight ? previousDateStr : currentDateStr,
+        overnight ? previousDayOfWeek : currentDayOfWeek
+      )) {
         console.log(`[Granular Scheduler] END Time reached for flow '${flow.name}' (${currentTimeStr}). Running endActions...`);
         
         // Abort the active start execution if any!
@@ -518,8 +519,11 @@ export class OrchestratorService {
 
             let flowIsActiveRange = false;
             if (startTime && endTime) {
-              const dateMatch = !startDate || !endDate || this.isDateInRange(currentDateStr, startDate, endDate);
-              const dayMatch = !daysOfWeek || daysOfWeek.length === 0 || daysOfWeek.includes(currentDayOfWeek);
+              const afterMidnight = startTime > endTime && currentTimeStr < endTime;
+              const occurrenceDate = afterMidnight ? previousDateStr : currentDateStr;
+              const occurrenceDay = afterMidnight ? previousDayOfWeek : currentDayOfWeek;
+              const dateMatch = !startDate || !endDate || this.isDateInRange(occurrenceDate, startDate, endDate);
+              const dayMatch = !daysOfWeek || daysOfWeek.length === 0 || daysOfWeek.includes(occurrenceDay);
               const timeMatch = this.isTimeInRange(currentTimeStr, startTime, endTime);
               flowIsActiveRange = dateMatch && dayMatch && timeMatch;
             } else {

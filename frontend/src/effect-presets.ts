@@ -14,8 +14,8 @@ export const halloweenPresets: Record<string, Effect> = {
     ledColorPerSecond: 0.25,
   }),
   'Halloween scroll': palette('Halloween Orange Purple Green Scroll', [[240, 80, 0], [112, 0, 176], [32, 176, 0]], {
-    ledScrollSpeed: 6, density: 0.15, brightness: 0.7, palette: {
-      blend: false, colors: [{ r: 240, g: 80, b: 0 }, { r: 112, g: 0, b: 176 }, { r: 32, g: 176, b: 0 }],
+    ledScrollSpeed: 2, density: 0.06, brightness: 0.65, palette: {
+      blend: true, colors: [{ r: 240, g: 80, b: 0 }, { r: 112, g: 0, b: 176 }, { r: 32, g: 176, b: 0 }],
     },
   }),
   'Ghost apparitions': palette('Ghostly Apparitions', [[0, 0, 0], [180, 210, 200], [15, 50, 30], [0, 0, 0]], {
