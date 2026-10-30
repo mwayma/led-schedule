@@ -10,6 +10,7 @@ export class OrchestratorService {
   private activeExecutions: Map<string, AbortController> = new Map(); // Prevent re-entry or cancel existing execution for same flow
   private minuteTicker: cron.ScheduledTask | null = null;
   private previewUntil = new Map<number, number>();
+  private stoppingCanvases = new Set<number>();
 
   public async previewEffect(canvasId: number, effect: StartEffectAction['properties']['effect']): Promise<void> {
     await this.handleStartEffect({ id: 'live-preview', type: 'start_effect', properties: { canvasId, effect } });
@@ -339,9 +340,21 @@ export class OrchestratorService {
   }
 
   private async handleStopEffect(originalCanvasId: number): Promise<void> {
+    if (this.stoppingCanvases.has(originalCanvasId)) return;
+    this.stoppingCanvases.add(originalCanvasId);
     const baseUrl = this.getNDSCPPUrl();
     try {
       const canvasId = await this.ensureCanvasOnServer(originalCanvasId);
+      this.previewUntil.delete(originalCanvasId);
+      // Stopping frames alone leaves ESP32s displaying their last frame.
+      // Stream black long enough to drain the configured client buffers first.
+      await this.handleStartEffect({ id: 'blackout', type: 'start_effect', properties: {
+        canvasId, effect: { type: '14SolidColorFill', name: 'Lights Off', color: { r: 0, g: 0, b: 0 } }
+      } });
+      const localCanvas = storageService.getCanvas(canvasId);
+      const bufferCount = Math.max(4, ...(localCanvas?.features || []).map(feature => feature.clientBufferCount || 4));
+      const drainMs = Math.max(500, Math.min(5000, ((bufferCount + 3) / (localCanvas?.fps || 15)) * 1000));
+      await new Promise(resolve => setTimeout(resolve, drainMs));
       const stopUrl = `${baseUrl}/api/canvases/stop`;
       await axios.post(stopUrl, { canvasIds: [canvasId] }, {
         headers: { 'Content-Type': 'application/json' },
@@ -351,6 +364,8 @@ export class OrchestratorService {
     } catch (err: any) {
       console.error(`Failed to stop effect on canvas ${originalCanvasId}:`, err.message || err);
       throw err;
+    } finally {
+      this.stoppingCanvases.delete(originalCanvasId);
     }
   }
 

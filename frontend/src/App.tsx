@@ -1404,7 +1404,7 @@ export default function App() {
                           ))}
                         </select>
                         <span style={{ fontSize: '11px', color: 'var(--text-muted)', display: 'block', marginTop: '6px' }}>
-                          Stops the animation runner on the specified canvas, shutting off the LEDs.
+                          Sends black frames, allows the controller buffer to drain, then stops streaming.
                         </span>
                       </div>
                     )}
