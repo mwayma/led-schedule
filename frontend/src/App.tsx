@@ -28,6 +28,7 @@ import {
   Edit2
 } from 'lucide-react';
 import { CanvasPreview } from './components/CanvasPreview';
+import { halloweenPresets } from './effect-presets';
 import type { Flow, Action, Trigger, LEDCanvas, SystemSettings, ActionType, TriggerType, StartEffectAction } from './types';
 
 // API Base URL (assumes same host in dev/production proxy, but fallback to port 5000 in dev)
@@ -744,40 +745,29 @@ export default function App() {
 
   const handleRunFlow = async (id: string) => {
     try {
-      await fetch(`${API_BASE}/api/flows/${id}/run`, { method: 'POST' });
-      alert('Flow manually triggered!');
+      const res = await fetch(`${API_BASE}/api/flows/${id}/run`, { method: 'POST' });
+      const result = await res.json();
+      if (!res.ok) throw new Error(result.error || 'Execution request failed');
+      alert('Execution requested. Verify the active effect in the canvas monitor.');
     } catch (err) {
-      alert('Failed to run flow');
+      alert(`Failed to run flow: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
 
-  const handleTriggerScoreboardAction = async (canvasId: number) => {
-    // Quickly flash green/gold on real lights for debugging
+  const handleTriggerEffect = async (action: StartEffectAction) => {
     try {
-      await fetch(`${API_BASE}/api/canvases/${canvasId}/effects`, {
+      const res = await fetch(`${API_BASE}/api/canvases/${action.properties.canvasId}/preview`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: "13PaletteEffect",
-          name: "Test Celebration",
-          ledScrollSpeed: 12.0,
-          palette: {
-            blend: true,
-            colors: [{ r: 0, g: 255, b: 0 }, { r: 255, g: 220, b: 0 }]
-          }
-        })
+        body: JSON.stringify(action.properties.effect)
       });
-      await fetch(`${API_BASE}/api/canvases/start`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ canvasIds: [canvasId] })
-      });
-      alert('Real lights triggered with celebration!');
+      const result = await res.json();
+      if (!res.ok) throw new Error(typeof result.error === 'string' ? result.error : JSON.stringify(result.error));
+      alert(result.message);
     } catch (err) {
-      alert('Failed to trigger server lights');
+      alert(`Could not start effect: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
-
   // ==========================================
   // Flow Editor Logic
   // ==========================================
@@ -1074,6 +1064,13 @@ export default function App() {
                                 } else if (type.includes('SolidColorFill')) {
                                   effectProps.color = { r: 0, g: 242, b: 254 };
                                 } else if (type.includes('PaletteEffect')) {
+                                  effectProps.ledColorPerSecond = 0;
+                                  effectProps.density = 1;
+                                  effectProps.everyNthDot = 1;
+                                  effectProps.dotSize = 1;
+                                  effectProps.rampedColor = false;
+                                  effectProps.brightness = 1;
+                                  effectProps.mirrored = false;
                                   effectProps.ledScrollSpeed = 5.0;
                                   effectProps.palette = {
                                     blend: true,
@@ -1109,6 +1106,13 @@ export default function App() {
                         </div>
 
                         {/* Effect Specific Fields */}
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                          {Object.entries(halloweenPresets).map(([label, effect]) => (
+                            <button key={label} className="btn-secondary" onClick={() => updateFn(action.id, {
+                              effect: JSON.parse(JSON.stringify(effect))
+                            })}>{label}</button>
+                          ))}
+                        </div>
                         <div style={{ borderTop: '1px solid rgba(255,255,255,0.05)', paddingTop: '12px', marginTop: '4px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                           <span style={{ fontSize: '11px', fontWeight: '700', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '4px' }}>
                             <Sliders size={12} /> EFFECT PARAMETERS
@@ -1379,7 +1383,7 @@ export default function App() {
                           <button 
                             className="btn-secondary pulse-glow-hover" 
                             style={{ padding: '8px 14px', fontSize: '12px', flex: 1, justifyContent: 'center', borderColor: 'rgba(16,185,129,0.3)', color: '#a7f3d0' }}
-                            onClick={() => handleTriggerScoreboardAction(action.properties.canvasId)}
+                            onClick={() => handleTriggerEffect(action as StartEffectAction)}
                           >
                             <Sparkles size={12} style={{ color: 'var(--color-success)' }} /> Force Real Lights
                           </button>
@@ -2450,6 +2454,13 @@ export default function App() {
                         These actions will execute when the schedule starts (at the configured Start Time).
                       </span>
                       {renderActionInputs(selectedFlow.actions, false)}
+                      {selectedFlow.trigger.properties.startTime && selectedFlow.trigger.properties.endTime && (
+                        <label style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                          <input type="checkbox" checked={!!selectedFlow.repeatUntilEnd}
+                            onChange={e => setSelectedFlow({ ...selectedFlow, repeatUntilEnd: e.target.checked })} />
+                          Repeat these scenes until End Time
+                        </label>
+                      )}
                     </div>
 
                     {/* Divider */}
@@ -2578,7 +2589,7 @@ export default function App() {
                                 checked={flow.enabled}
                                 onChange={async (e) => {
                                   const updatedFlow = { ...flow, enabled: e.target.checked };
-                                  await handleSaveFlow(updatedFlow);
+                                  await handleSaveFlow(prepareFlowForEdit(updatedFlow, settings.timezone || 'UTC'));
                                 }}
                                 style={{ width: '14px', height: '14px', cursor: 'pointer' }}
                               />
@@ -3392,3 +3403,4 @@ export default function App() {
     </div>
   );
 }
+
