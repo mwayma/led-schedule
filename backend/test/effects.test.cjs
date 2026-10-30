@@ -38,7 +38,8 @@ function orchestrator() {
     post: async (url, body) => { requests.push(['POST', url, body]); return { data: {} }; },
     put: async (url, body) => { requests.push(['PUT', url, body]); return { data: {} }; },
   };
-  const context = { axios, normalizeEffect, console, AbortController, setTimeout, clearTimeout,
+  const context = { axios, normalizeEffect, console, AbortController,
+    setTimeout: (fn, ms) => setTimeout(fn, ms >= 500 ? 0 : ms), clearTimeout,
     storageService: { getSettings: () => ({ ndscppHostname: 'ndscpp', ndscppPort: 7777, timezone: 'America/Chicago' }),
       getCanvas: () => ({ id: 1, fps: 15 }), getCanvases: () => canvases, getFlow: id => flows.find(f => f.id === id), getFlows: () => flows },
     scoreboardService: { clear() {} }, cron: {}, Date,
@@ -97,10 +98,13 @@ test('October 31 window starts at 5:45 Central and runs end actions at 10 PM', a
   requests.length = 0;
   current = '2026-11-01T03:00:00Z';
   service.checkTimeTriggerTick();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0][1], 'http://ndscpp:7777/api/canvases/stop');
-  assert.deepEqual(Array.from(requests[0][2].canvasIds), [1]);
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(requests.length, 4);
+  assert.equal(requests[1][0], 'PUT');
+  assert.equal(requests[1][2].name, 'Lights Off');
+  assert.deepEqual(JSON.parse(JSON.stringify(requests[1][2].color)), { r: 0, g: 0, b: 0 });
+  assert.equal(requests[3][1], 'http://ndscpp:7777/api/canvases/stop');
+  assert.deepEqual(Array.from(requests[3][2].canvasIds), [1]);
 });
 
 test('all Halloween presets satisfy the strict palette deserializer', () => {
@@ -112,4 +116,28 @@ test('all Halloween presets satisfy the strict palette deserializer', () => {
     assert.equal(JSON.stringify(normalized), JSON.stringify(effect));
     assert.ok(effect.palette.colors.every(c => Object.values(c).every(v => v >= 0 && v <= 255)));
   }
+});
+
+test('October 31 overnight run stops at November 1 midnight Central, never starts in November', async () => {
+  const { service, requests, flows, context } = orchestrator();
+  let current = '2026-11-01T05:00:00Z';
+  context.Date = class extends Date { constructor(...args) { super(...(args.length ? args : [current])); } };
+  flows.push({ id: 'october', name: 'October nights', enabled: true,
+    trigger: { type: 'time', properties: { startDate: '10-01', endDate: '10-31', startTime: '17:45', endTime: '00:00' } },
+    actions: [{ id: 'on', type: 'start_effect', properties: { canvasId: 1, effect: { type: '15StarfieldEffect', name: 'Ghost' } } }],
+    endActions: [{ id: 'off', type: 'stop_effect', properties: { canvasId: 1 } }] });
+  service.checkTimeTriggerTick();
+  await new Promise(resolve => setTimeout(resolve, 20));
+  assert.equal(requests.length, 4);
+  assert.equal(requests[1][2].name, 'Lights Off');
+  assert.equal(requests[3][1], 'http://ndscpp:7777/api/canvases/stop');
+  requests.length = 0;
+  current = '2026-11-01T23:45:00Z';
+  service.checkTimeTriggerTick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 0);
+  current = '2026-10-01T05:00:00Z';
+  service.checkTimeTriggerTick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 0, 'no September 30 occurrence to end');
 });
