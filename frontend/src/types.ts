@@ -94,6 +94,7 @@ export interface Flow {
   trigger: Trigger;
   actions: Action[];
   endActions?: Action[];
+  repeatUntilEnd?: boolean;
 }
 
 export interface SystemSettings {
@@ -152,3 +153,4 @@ export interface LEDCanvas {
     }>;
   };
 }
+

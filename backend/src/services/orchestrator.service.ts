@@ -3,11 +3,18 @@ import * as cron from 'node-cron';
 import { storageService } from './storage.service';
 import { scoreboardService } from './scoreboard.service';
 import { Flow, Action, StartEffectAction, CallApiAction, TimeTrigger } from '../types';
+import { normalizeEffect } from './effect-config';
 
 export class OrchestratorService {
   private cronTasks: Map<string, cron.ScheduledTask> = new Map();
   private activeExecutions: Map<string, AbortController> = new Map(); // Prevent re-entry or cancel existing execution for same flow
   private minuteTicker: cron.ScheduledTask | null = null;
+  private previewUntil = new Map<number, number>();
+
+  public async previewEffect(canvasId: number, effect: StartEffectAction['properties']['effect']): Promise<void> {
+    await this.handleStartEffect({ id: 'live-preview', type: 'start_effect', properties: { canvasId, effect } });
+    this.previewUntil.set(canvasId, Date.now() + 5 * 60 * 1000);
+  }
 
   constructor() {}
 
@@ -29,6 +36,9 @@ export class OrchestratorService {
 
     // Load flows from storage
     const flows = storageService.getFlows();
+    for (const [flowId, controller] of this.activeExecutions) {
+      if (!flows.some(flow => flow.id === flowId && flow.enabled)) controller.abort();
+    }
     for (const flow of flows) {
       if (!flow.enabled) {
         continue;
@@ -88,7 +98,14 @@ export class OrchestratorService {
     console.log(`Starting execution of flow: ${flow.name}`);
 
     try {
-      await this.runActions(flow.actions, controller.signal);
+      const repeating = flow.repeatUntilEnd && flow.trigger.type === 'time' &&
+        flow.trigger.properties.startTime && flow.trigger.properties.endTime;
+      if (repeating && !flow.actions.some(action => action.type === 'delay' && action.properties.durationSeconds > 0)) {
+        throw new Error('Repeating flows require a positive delay between cycles.');
+      }
+      do {
+        await this.runActions(flow.actions, controller.signal);
+      } while (repeating && !controller.signal.aborted);
       console.log(`Successfully completed execution of flow: ${flow.name}`);
     } catch (err: any) {
       if (err.name === 'AbortError' || err.message === 'Aborted') {
@@ -212,7 +229,7 @@ export class OrchestratorService {
   private async handleStartEffect(action: StartEffectAction): Promise<void> {
     const baseUrl = this.getNDSCPPUrl();
     const originalCanvasId = action.properties.canvasId;
-    const effect = action.properties.effect;
+    const effect = normalizeEffect(action.properties.effect);
 
     // Ensure canvas exists and reconcile its ID
     const canvasId = await this.ensureCanvasOnServer(originalCanvasId);
@@ -222,6 +239,9 @@ export class OrchestratorService {
       // Try the in-memory PUT endpoint first to avoid socket reset
       try {
         const putUrl = `${baseUrl}/api/canvases/${canvasId}/effects`;
+        // Start() returns early for an already-running manager. Stop first so
+        // effects with initialization (e.g. Starfield) receive Start(canvas).
+        await axios.post(`${baseUrl}/api/canvases/stop`, { canvasIds: [canvasId] }, { timeout: 5000 });
         await axios.put(putUrl, effect, {
           headers: { 'Content-Type': 'application/json' },
           timeout: 5000
@@ -480,6 +500,9 @@ export class OrchestratorService {
         const localCanvases = storageService.getCanvases();
 
         for (const canvas of localCanvases) {
+          // Explicit live tests temporarily override the date/time reconciler.
+          if ((this.previewUntil.get(canvas.id) ?? 0) > Date.now()) continue;
+          this.previewUntil.delete(canvas.id);
           // Find all enabled flows targeting this canvas
           const flowsTargetingCanvas = flows.filter(f => 
             f.enabled && 
@@ -515,6 +538,11 @@ export class OrchestratorService {
           const isCurrentlyRunning = serverCanvas?.effectsManager?.running ?? false;
 
           if (activeStartAction) {
+            if (activeFlow && this.activeExecutions.has(activeFlow.id)) continue;
+            if (activeFlow?.repeatUntilEnd && !this.activeExecutions.has(activeFlow.id)) {
+              this.executeFlow(activeFlow.id);
+              continue;
+            }
             // Desired state: RUNNING
             if (!isCurrentlyRunning) {
               console.log(`[Reconciliation] Canvas ${canvas.id} (${canvas.name}) should be RUNNING under flow '${activeFlow!.name}', but is stopped on server. Restoring effect...`);
@@ -559,3 +587,4 @@ export class OrchestratorService {
 
 // Export singleton instance
 export const orchestratorService = new OrchestratorService();
+

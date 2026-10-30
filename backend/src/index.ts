@@ -204,11 +204,27 @@ app.post('/api/flows/:id/run', authMiddleware, (req: Request, res: Response) => 
   }
 
   console.log(`Manual execution requested for flow: ${flow.name}`);
+  if (!flow.enabled) {
+    return res.status(409).json({ error: 'Enable the flow before running it manually.' });
+  }
   orchestratorService.executeFlow(flow.id).catch(err => {
     console.error(`Error executing flow ${flow.name} manually:`, err);
   });
 
-  return res.json({ success: true, message: `Manually started flow: ${flow.name}` });
+  return res.status(202).json({ success: true, message: `Execution requested for flow: ${flow.name}` });
+});
+
+app.post('/api/canvases/:id/preview', authMiddleware, async (req: Request, res: Response) => {
+  const canvasId = Number(req.params.id);
+  if (!Number.isInteger(canvasId) || !req.body?.type || !req.body?.name) {
+    return res.status(400).json({ error: 'A canvas ID and an effect with type and name are required.' });
+  }
+  try {
+    await orchestratorService.previewEffect(canvasId, req.body);
+    return res.json({ success: true, message: `Started ${req.body.name} on canvas ${canvasId}. Preview lasts up to five minutes outside its schedule.` });
+  } catch (err: any) {
+    return res.status(502).json({ error: err.response?.data || err.message || 'NDSCPP rejected the effect.' });
+  }
 });
 
 // ==========================================
@@ -613,3 +629,4 @@ app.listen(PORT, () => {
   console.log(`Backend server running on port ${PORT}`);
   orchestratorService.init();
 });
+
