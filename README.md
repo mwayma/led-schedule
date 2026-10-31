@@ -103,19 +103,21 @@ directory by default, or the file passed with `-c`. Its controller parser requir
 is applied after loading the file. An empty file, `{}`, or a top-level array is
 not a valid replacement.
 
-For scheduler-managed layouts, import any server-only canvases you want to retain
-into the scheduler before starting NDSCPP empty. The scheduler restores its saved
-canvas layout when it detects it missing; enabled schedules restore the effects
-within their active time window. Features created only in NDSCPP are not
+For scheduler-owned persistence, import any server-only canvases you want to retain
+into the scheduler before starting NDSCPP empty. The scheduler restores all saved
+canvas layouts on startup and each background minute tick, including original IDs,
+FPS and features, without needing an open browser. Enabled schedules restore the
+effects within their active time window. Features created only in NDSCPP are not
 automatically added to the scheduler manifest.
 
-NDSCPP also writes its current configuration after API changes. Keep that runtime
-file writable and persistent (for example `/data/config.led` on a PVC, with the
-server started using `-c /data/config.led`). A ConfigMap-mounted file is read-only;
-an image-baked file without persistent storage resets when its container is
-replaced. Seed the minimal file only when the persistent file does not yet exist,
-not on every startup. Removing compiled demo data alone does not change a saved
-runtime file; normal builds already use `USE_DEMO_DATA 0`.
+NDSCPP also writes its current configuration after API changes, so its runtime
+file must be writable. To make it disposable, copy the minimal configuration
+into that writable location on every pod startup. Persist only the scheduler's
+manifest as the source of truth; let its background reconciliation rebuild the
+empty renderer. A ConfigMap can supply the minimal seed but should not be mounted
+directly as the file NDSCPP writes. If instead NDSCPP owns persistence, seed only
+when its persistent runtime file is absent. Removing compiled demo data alone
+does not change a saved runtime file; normal builds already use `USE_DEMO_DATA 0`.
 
 Scheduler feature IDs are manifest-local. NDSCPP allocates runtime feature IDs
 independently, so the UI keeps the manifest ID and exposes runtime IDs separately
