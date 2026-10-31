@@ -137,7 +137,7 @@ segment between imported canvases without leaving a second assignment behind.
 Sports Score triggers support `properties.event`: `score` (default, any score
 increase), `win` (ESPN confirmed final with this team marked winner), and `kickoff`
 (pregame to in-progress). The college-football feed includes all FBS games. Scores
-are polled every 30 seconds from 15 minutes before kickoff through eight hours
+are polled from 15 minutes before kickoff through eight hours
 after the scheduled start; ESPN reporting adds its own delay.
 
 Each flow checkpoints game IDs, score high-water marks, kickoff and final state in
@@ -151,3 +151,11 @@ celebration duration. The canvas is reserved for that execution, then the curren
 scheduled scene resumes, or lights turn off outside an active schedule. Sports
 flows do not repeat automatically. The same canvas uses the latest celebration
 if another sports event arrives before the first finishes.
+
+Polling adapts to the existing scoreboard response: 15 seconds while a monitored
+team has possession, 30 seconds otherwise (including missing possession), and 60
+seconds during halftime. Completed scheduled games stop polling. Score, win and
+kickoff flows share league requests and cached team schedules. Once the correct
+daily feed is found, fallback dates are skipped. Throttling and network failures
+back off exponentially, respecting numeric or HTTP-date Retry-After headers.
+ESPN feed latency still applies; these intervals are client-side targets.
