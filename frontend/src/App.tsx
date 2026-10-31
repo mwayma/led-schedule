@@ -2626,7 +2626,7 @@ export default function App() {
 
                             {flow.trigger.type === 'sports_score' && (
                               <div style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
-                                <span>{(flow.trigger.properties as any).event === 'win' ? 'WIN' : 'SCORE'} • ESPN: <strong>{(flow.trigger.properties as any).team}</strong> ({(flow.trigger.properties as any).league?.toUpperCase()}) - Mode: <strong>{(flow.trigger.properties as any).scheduleMode || 'auto'}</strong></span>
+                                <span>{((flow.trigger.properties as any).event || 'score').toUpperCase()} • ESPN: <strong>{(flow.trigger.properties as any).team}</strong> ({(flow.trigger.properties as any).league?.toUpperCase()}) - Mode: <strong>{(flow.trigger.properties as any).scheduleMode || 'auto'}</strong></span>
                               </div>
                             )}
 

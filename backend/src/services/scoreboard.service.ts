@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SportsScoreTrigger, Flow } from '../types';
 
-interface GameState { score: number; state: string; winHandled: boolean; }
+interface GameState { score: number; state: string; winHandled: boolean; kickoffHandled?: boolean; }
 interface TrackedTeam {
   flowId: string;
   trigger: SportsScoreTrigger;
@@ -132,12 +132,18 @@ export class ScoreboardService {
         const previous = this.states[key];
         const won = state === 'post' && mine.winner === true;
         // A first observation establishes a baseline; never celebrate an old score or final on startup.
+        const victoryReady = won && teams.some(t => {
+          if (t.trigger.properties.event !== 'win' || t.teamId !== team.teamId || t.trigger.properties.team !== props.team) return false;
+          const winKey = [t.flowId, props.sport, props.league, t.teamId || name, 'win', event.id].join(':');
+          return this.states[winKey] && !this.states[winKey].winHandled;
+        });
         const fire = !!previous && (props.event === 'kickoff'
-          ? previous.state === 'pre' && state === 'in'
+          ? !previous.kickoffHandled && previous.state === 'pre' && state === 'in'
           : props.event === 'win'
           ? won && !previous.winHandled
-          : (state === 'in' || state === 'post') && score > previous.score);
-        this.states[key] = { score, state, winHandled: previous?.winHandled || state === 'post' };
+          : !victoryReady && (state === 'in' || state === 'post') && score > previous.score);
+        this.states[key] = { score: Math.max(previous?.score ?? score, score), state,
+          winHandled: previous?.winHandled || state === 'post', kickoffHandled: previous?.kickoffHandled || state !== 'pre' };
         try { this.saveState(); }
         catch (err: any) { console.error('Cannot checkpoint sports event; skipping celebration:', err.message); continue; }
         if (fire) {

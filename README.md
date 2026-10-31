@@ -131,3 +131,23 @@ segment between imported canvases without leaving a second assignment behind.
 *   **Admin Dashboard**: All configuration APIs, layout updates, and control routes require an HTTP-only secure cookie containing a JWT signature.
 *   **Private C++ Server**: The Ingress blocks all public access to the raw C++ REST port (7777), keeping local light channels fully private within the Kubernetes cluster network.
 
+
+## Football event celebrations
+
+Sports Score triggers support `properties.event`: `score` (default, any score
+increase), `win` (ESPN confirmed final with this team marked winner), and `kickoff`
+(pregame to in-progress). The college-football feed includes all FBS games. Scores
+are polled every 30 seconds from 15 minutes before kickoff through eight hours
+after the scheduled start; ESPN reporting adds its own delay.
+
+Each flow checkpoints game IDs, score high-water marks, kickoff and final state in
+`DATA_DIR/sports-state.json`. Keep that directory persistent. A first observation
+establishes a baseline; enabling a flow mid-game does not replay past scores,
+kickoff, or old wins. A touchdown and extra point may produce separate score
+celebrations. Simultaneous final score and win updates prefer the win flow.
+
+A sports flow should start its effect and include a positive delay for the desired
+celebration duration. The canvas is reserved for that execution, then the current
+scheduled scene resumes, or lights turn off outside an active schedule. Sports
+flows do not repeat automatically. The same canvas uses the latest celebration
+if another sports event arrives before the first finishes.
