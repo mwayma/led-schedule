@@ -11,6 +11,8 @@ export class OrchestratorService {
   private minuteTicker: cron.ScheduledTask | null = null;
   private previewUntil = new Map<number, number>();
   private stoppingCanvases = new Set<number>();
+  private startingCanvases = new Set<number>();
+  private activeCanvasActions = new Map<number, StartEffectAction>();
 
   public async previewEffect(canvasId: number, effect: StartEffectAction['properties']['effect']): Promise<void> {
     await this.handleStartEffect({ id: 'live-preview', type: 'start_effect', properties: { canvasId, effect } });
@@ -23,6 +25,7 @@ export class OrchestratorService {
     console.log('Initializing Orchestrator Service...');
     this.reloadAllTriggers();
     this.startMinuteTicker();
+    this.checkTimeTriggerTick().catch(err => console.error('Initial layout restoration failed:', err));
   }
 
   public reloadAllTriggers(): void {
@@ -131,6 +134,7 @@ export class OrchestratorService {
       
       switch (action.type) {
         case 'start_effect':
+          this.activeCanvasActions.set(action.properties.canvasId, action as StartEffectAction);
           await this.handleStartEffect(action as StartEffectAction);
           break;
         case 'stop_effect':
@@ -203,22 +207,19 @@ export class OrchestratorService {
     console.log(`[Orchestrator] Canvas '${localCanvas.name}' (ID ${canvasId}) is missing on C++ server. Recreating...`);
     try {
       const createRes = await axios.post(`${baseUrl}/api/canvases`, {
+        id: localCanvas.id,
         name: localCanvas.name,
         width: localCanvas.width,
-        height: localCanvas.height
+        height: localCanvas.height,
+        effectsManager: { fps: localCanvas.fps || 30 },
+        features: localCanvas.features || []
       }, { timeout: 2000 });
 
       const newServerId = createRes.data.id;
       console.log(`[Orchestrator] Recreated canvas on server. New ID is ${newServerId}. Adding features...`);
 
-      if (localCanvas.features) {
-        for (const feat of localCanvas.features) {
-          await axios.post(`${baseUrl}/api/canvases/${newServerId}/features`, feat, { timeout: 2000 });
-        }
-      }
-
       // Reconcile ID in storage and active configs
-      storageService.reconcileCanvasId(canvasId, newServerId);
+      if (canvasId !== newServerId) storageService.reconcileCanvasId(canvasId, newServerId);
       return newServerId;
     } catch (err: any) {
       const errMsg = err.response?.data ? (typeof err.response.data === 'object' ? JSON.stringify(err.response.data) : err.response.data) : err.message;
@@ -228,6 +229,13 @@ export class OrchestratorService {
   }
 
   private async handleStartEffect(action: StartEffectAction): Promise<void> {
+    const canvasId = action.properties.canvasId;
+    this.startingCanvases.add(canvasId);
+    try { await this.startEffectOnServer(action); }
+    finally { this.startingCanvases.delete(canvasId); }
+  }
+
+  private async startEffectOnServer(action: StartEffectAction): Promise<void> {
     const baseUrl = this.getNDSCPPUrl();
     const originalCanvasId = action.properties.canvasId;
     const effect = normalizeEffect(action.properties.effect);
@@ -346,6 +354,7 @@ export class OrchestratorService {
     try {
       const canvasId = await this.ensureCanvasOnServer(originalCanvasId);
       this.previewUntil.delete(originalCanvasId);
+      this.activeCanvasActions.delete(originalCanvasId);
       // Stopping frames alone leaves ESP32s displaying their last frame.
       // Stream black long enough to drain the configured client buffers first.
       await this.handleStartEffect({ id: 'blackout', type: 'start_effect', properties: {
@@ -389,12 +398,12 @@ export class OrchestratorService {
   private startMinuteTicker(): void {
     if (this.minuteTicker) return;
     this.minuteTicker = cron.schedule('* * * * *', () => {
-      this.checkTimeTriggerTick();
+      this.checkTimeTriggerTick().catch(err => console.error('Scheduler tick failed:', err));
     });
     console.log('Started granular minute ticker scheduler.');
   }
 
-  private checkTimeTriggerTick(): void {
+  private async checkTimeTriggerTick(): Promise<void> {
     const now = new Date();
     let localYear = now.getFullYear();
     let localHour: string;
@@ -451,6 +460,13 @@ export class OrchestratorService {
     const previousDate = new Date(Date.UTC(localYear, localMonth - 1, localDay - 1));
     const previousDateStr = `${(previousDate.getUTCMonth() + 1).toString().padStart(2, '0')}-${previousDate.getUTCDate().toString().padStart(2, '0')}`;
     const previousDayOfWeek = (currentDayOfWeek + 6) % 7;
+
+    // NDSCPP may deliberately boot empty. Restore saved layout even outside an
+    // active schedule and without a browser polling /api/config/canvases.
+    for (const canvas of storageService.getCanvases()) {
+      try { await this.ensureCanvasOnServer(canvas.id); }
+      catch (err: any) { console.warn(`Could not restore canvas ${canvas.id}:`, err.message); }
+    }
 
     const flows = storageService.getFlows();
     for (const flow of flows) {
@@ -557,7 +573,14 @@ export class OrchestratorService {
           const isCurrentlyRunning = serverCanvas?.effectsManager?.running ?? false;
 
           if (activeStartAction) {
-            if (activeFlow && this.activeExecutions.has(activeFlow.id)) continue;
+            if (this.startingCanvases.has(canvas.id) || this.stoppingCanvases.has(canvas.id)) continue;
+            if (activeFlow && this.activeExecutions.has(activeFlow.id)) {
+              if (!isCurrentlyRunning) {
+                const currentAction = this.activeCanvasActions.get(canvas.id) || activeStartAction;
+                this.handleStartEffect(currentAction).catch(err => console.error('Could not restore active scene after renderer reset:', err));
+              }
+              continue;
+            }
             if (activeFlow?.repeatUntilEnd && !this.activeExecutions.has(activeFlow.id)) {
               this.executeFlow(activeFlow.id);
               continue;

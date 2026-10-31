@@ -84,6 +84,40 @@ test('disabled flows do not execute', async () => {
   assert.equal(requests.length, 0);
 });
 
+test('empty NDSCPP is rebuilt from the manifest without a browser, preserving canvas IDs and FPS', async () => {
+  const { service, requests, context } = orchestrator();
+  const saved = { id: 7, name: 'Shared', width: 144, height: 1, fps: 27,
+    features: [{ id: 0, hostName: '192.168.1.186', clientBufferCount: 24 },
+      { id: 1, hostName: '192.168.1.185', clientBufferCount: 500 }] };
+  context.storageService.getCanvases = () => [saved];
+  context.storageService.getCanvas = () => saved;
+  context.axios.get = async () => ({ data: [] });
+  context.axios.post = async (url, body) => { requests.push(['POST', url, body]); return { data: { id: body.id } }; };
+  await service.checkTimeTriggerTick();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0][1], 'http://ndscpp:7777/api/canvases');
+  assert.equal(requests[0][2].id, 7);
+  assert.equal(requests[0][2].effectsManager.fps, 27);
+  assert.equal(requests[0][2].features[0].clientBufferCount, 24);
+  assert.equal(requests[0][2].features[1].clientBufferCount, 500);
+});
+
+test('renderer reset restores the current scene even while a repeat flow is holding in a delay', async () => {
+  const { service, requests, flows, context } = orchestrator();
+  context.Date = class extends Date { constructor(...args) { super(...(args.length ? args : ['2026-10-31T23:00:00Z'])); } };
+  const first = { id: 'glow', type: 'start_effect', properties: { canvasId: 1, effect: { type: '15StarfieldEffect', name: 'First scene' } } };
+  const current = { id: 'ghost', type: 'start_effect', properties: { canvasId: 1, effect: { type: '15StarfieldEffect', name: 'Current scene' } } };
+  flows.push({ id: 'active', name: 'Active', enabled: true, repeatUntilEnd: true,
+    trigger: { type: 'time', properties: { startDate: '10-01', endDate: '10-31', startTime: '17:45', endTime: '00:00' } }, actions: [first] });
+  service.activeExecutions.set('active', new AbortController());
+  service.activeCanvasActions.set(1, current);
+  await service.checkTimeTriggerTick();
+  await new Promise(resolve => setImmediate(resolve));
+  const updates = requests.filter(request => request[0] === 'PUT');
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0][2].name, 'Current scene');
+});
+
 test('October 31 window starts at 5:45 Central and runs end actions at 10 PM', async () => {
   const { service, requests, flows, context } = orchestrator();
   let current = '2026-10-31T22:45:00Z';

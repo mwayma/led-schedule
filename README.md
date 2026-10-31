@@ -89,8 +89,45 @@ kubectl apply -f k8s/ingress.yaml
 
 ---
 
+## NDSCPP configuration ownership
+
+The minimal explicit startup configuration for NDSCPP is a JSON object:
+
+```json
+{"port":7777,"canvases":[]}
+```
+
+The file must exist and be readable. NDSCPP reads `config.led` from its working
+directory by default, or the file passed with `-c`. Its controller parser requires
+`port`; `canvases` can be empty (or omitted). The command-line port, default 7777,
+is applied after loading the file. An empty file, `{}`, or a top-level array is
+not a valid replacement.
+
+For scheduler-owned persistence, import any server-only canvases you want to retain
+into the scheduler before starting NDSCPP empty. The scheduler restores all saved
+canvas layouts on startup and each background minute tick, including original IDs,
+FPS and features, without needing an open browser. Enabled schedules restore the
+effects within their active time window. Features created only in NDSCPP are not
+automatically added to the scheduler manifest.
+
+NDSCPP also writes its current configuration after API changes, so its runtime
+file must be writable. To make it disposable, copy the minimal configuration
+into that writable location on every pod startup. Persist only the scheduler's
+manifest as the source of truth; let its background reconciliation rebuild the
+empty renderer. A ConfigMap can supply the minimal seed but should not be mounted
+directly as the file NDSCPP writes. If instead NDSCPP owns persistence, seed only
+when its persistent runtime file is absent. Removing compiled demo data alone
+does not change a saved runtime file; normal builds already use `USE_DEMO_DATA 0`.
+
+Scheduler feature IDs are manifest-local. NDSCPP allocates runtime feature IDs
+independently, so the UI keeps the manifest ID and exposes runtime IDs separately
+as `serverFeatureId`. Editing or deleting resolves the live segment by controller
+and geometry. The feature editor's Canvas Target control moves an existing
+segment between imported canvases without leaving a second assignment behind.
+
 ## 6. Security Design
 
 *   **Public Webhooks**: Only `/api/v1/webhooks/trigger/:token` is exposed publicly on Ingress. It is secured by a high-entropy random token.
 *   **Admin Dashboard**: All configuration APIs, layout updates, and control routes require an HTTP-only secure cookie containing a JWT signature.
 *   **Private C++ Server**: The Ingress blocks all public access to the raw C++ REST port (7777), keeping local light channels fully private within the Kubernetes cluster network.
+

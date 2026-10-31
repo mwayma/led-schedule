@@ -12,6 +12,7 @@ import { storageService } from './services/storage.service';
 import { orchestratorService } from './services/orchestrator.service';
 import { authMiddleware, AuthenticatedRequest, COOKIE_NAME, JWT_SECRET } from './middleware/auth';
 import { Flow, LEDCanvasConfig, LEDFeatureConfig } from './types';
+import { ensureServerFeature, mergeFeatureTelemetry, replaceServerFeature, moveServerFeature } from './services/feature-sync';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -296,6 +297,7 @@ const syncCanvasToServer = async (canvas: LEDCanvasConfig) => {
         width: canvas.width,
         height: canvas.height,
         effectsManager: {
+          ...serverCanvas?.effectsManager,
           fps: localFps
         }
       };
@@ -312,10 +314,7 @@ const syncCanvasToServer = async (canvas: LEDCanvasConfig) => {
       const serverFeatures = serverCanvas.features || [];
       if (canvas.features) {
         for (const feat of canvas.features) {
-          const exists = serverFeatures.some((sf: any) => sf.friendlyName === feat.friendlyName || sf.hostName === feat.hostName);
-          if (!exists) {
-            await axios.post(`${baseUrl}/api/canvases/${canvas.id}/features`, feat, { timeout: 2000 });
-          }
+          await ensureServerFeature(baseUrl, canvas.id, feat, serverFeatures);
         }
       }
     }
@@ -346,15 +345,7 @@ app.get('/api/config/canvases', authMiddleware, async (req: Request, res: Respon
           ...local,
           currentEffectName: server.currentEffectName,
           effectsManager: server.effectsManager,
-          features: local.features.map(localFeat => {
-            const serverFeat = server.features?.find((sf: any) => sf.friendlyName === localFeat.friendlyName || sf.hostName === localFeat.hostName);
-            return {
-              ...localFeat,
-              id: serverFeat?.id ?? localFeat.id,
-              isConnected: serverFeat?.isConnected,
-              lastClientResponse: serverFeat?.lastClientResponse
-            };
-          })
+          features: local.features.map(localFeat => mergeFeatureTelemetry(localFeat, server.features || []))
         };
       } else {
         // Sync in background
@@ -534,22 +525,18 @@ app.delete('/api/config/canvases/:id/features/:fid', authMiddleware, async (req:
     return res.status(404).json({ error: 'Canvas not found locally' });
   }
 
-  const initialLength = canvas.features.length;
-  canvas.features = canvas.features.filter(f => f.id !== featureId);
-
-  if (canvas.features.length === initialLength) {
+  const feature = canvas.features.find(f => f.id === featureId);
+  if (!feature) {
     return res.status(404).json({ error: 'Feature not found locally' });
   }
 
-  storageService.saveCanvas(canvas);
-
-  // Try to delete from C++ server
   const settings = storageService.getSettings();
   const baseUrl = `http://${settings.ndscppHostname}:${settings.ndscppPort}`;
   try {
-    await axios.delete(`${baseUrl}/api/canvases/${canvasId}/features/${featureId}`, { timeout: 2000 });
+    await replaceServerFeature(baseUrl, canvasId, feature);
+    storageService.saveCanvas({ ...canvas, features: canvas.features.filter(f => f.id !== featureId) });
   } catch (err: any) {
-    console.warn(`Failed to delete feature ${featureId} from canvas ${canvasId} on C++ server:`, err.message);
+    return res.status(502).json({ error: `Feature was not deleted: ${err.response?.data || err.message}` });
   }
 
   return res.json({ success: true });
@@ -574,27 +561,48 @@ app.put('/api/config/canvases/:id/features/:fid', authMiddleware, async (req: Re
   }
 
   const { friendlyName, hostName, port, channel, width, height, offsetX, offsetY, redGreenSwap, reversed, clientBufferCount } = req.body;
-
-  if (friendlyName !== undefined) canvas.features[featureIndex].friendlyName = friendlyName;
-  if (hostName !== undefined) canvas.features[featureIndex].hostName = hostName;
-  if (port !== undefined) canvas.features[featureIndex].port = port;
-  if (channel !== undefined) canvas.features[featureIndex].channel = channel;
-  if (width !== undefined) canvas.features[featureIndex].width = width;
-  if (height !== undefined) canvas.features[featureIndex].height = height;
-  if (offsetX !== undefined) canvas.features[featureIndex].offsetX = offsetX;
-  if (offsetY !== undefined) canvas.features[featureIndex].offsetY = offsetY;
-  if (redGreenSwap !== undefined) canvas.features[featureIndex].redGreenSwap = !!redGreenSwap;
-  if (reversed !== undefined) canvas.features[featureIndex].reversed = !!reversed;
-  if (clientBufferCount !== undefined) canvas.features[featureIndex].clientBufferCount = clientBufferCount;
-
-  storageService.saveCanvas(canvas);
-
-  // Try to sync to C++ server
-  syncCanvasToServer(canvas).catch(() => {});
-
-  return res.json({ success: true, feature: canvas.features[featureIndex] });
+  const before = canvas.features[featureIndex];
+  const updated = { ...before };
+  const changes = { friendlyName, hostName, port, channel, width, height, offsetX, offsetY, redGreenSwap, reversed, clientBufferCount };
+  for (const [key, value] of Object.entries(changes)) {
+    if (value !== undefined) (updated as any)[key] = value;
+  }
+  const settings = storageService.getSettings();
+  const baseUrl = `http://${settings.ndscppHostname}:${settings.ndscppPort}`;
+  try {
+    await replaceServerFeature(baseUrl, canvasId, before, updated);
+    storageService.saveCanvas({ ...canvas, features: canvas.features.map(f => f.id === featureId ? updated : f) });
+    return res.json({ success: true, feature: updated });
+  } catch (err: any) {
+    return res.status(502).json({ error: `Feature was not updated: ${err.response?.data || err.message}` });
+  }
 });
 
+
+app.post('/api/config/canvases/:id/features/:fid/move', authMiddleware, async (req: Request, res: Response) => {
+  const sourceId = Number(req.params.id);
+  const featureId = Number(req.params.fid);
+  const targetId = Number(req.body.targetCanvasId);
+  const source = storageService.getCanvas(sourceId);
+  const target = storageService.getCanvas(targetId);
+  const before = source?.features.find(feature => feature.id === featureId);
+  if (!source || !target || !before) return res.status(404).json({ error: 'Source feature or destination canvas not found locally.' });
+  if (sourceId === targetId) return res.status(400).json({ error: 'Choose a different destination canvas.' });
+  const fields = req.body.feature || {};
+  const after: LEDFeatureConfig = { ...before, ...fields,
+    id: target.features.length ? Math.max(...target.features.map(feature => feature.id)) + 1 : 0 };
+  if (after.offsetX + after.width > target.width || after.offsetY + after.height > target.height) {
+    return res.status(400).json({ error: 'The feature segment does not fit on the destination canvas.' });
+  }
+  const settings = storageService.getSettings();
+  try {
+    await moveServerFeature(`http://${settings.ndscppHostname}:${settings.ndscppPort}`, sourceId, targetId, before, after);
+    storageService.moveFeature(sourceId, featureId, targetId, after);
+    return res.json({ success: true, feature: after });
+  } catch (err: any) {
+    return res.status(502).json({ error: `Feature was not moved: ${err.response?.data || err.message}` });
+  }
+});
 
 // Proxy Routes
 app.get('/api/canvases', authMiddleware, (req, res) => proxyNDSCPP(req, res, '/api/canvases', 'GET'));
