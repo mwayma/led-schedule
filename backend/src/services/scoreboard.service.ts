@@ -1,343 +1,148 @@
 import axios from 'axios';
+import * as fs from 'fs';
+import * as path from 'path';
 import { SportsScoreTrigger, Flow } from '../types';
 
+interface GameState { score: number; state: string; winHandled: boolean; }
 interface TrackedTeam {
   flowId: string;
   trigger: SportsScoreTrigger;
-  teamId?: string; // cached ESPN team ID
-  gameStartTimes: Date[]; // list of scheduled game times (either auto or manual)
-  lastScheduleFetch: Date | null;
-  lastCompletedGameTime?: string; // ISO string of gameStartTime that was completed
-  currentGameStartTime?: string; // ISO string of currently active game start time
-  isGameActive: boolean; // whether this game is currently active
-  lastScore: number | null;
-  gameState: 'pre' | 'in' | 'post' | 'unknown';
-  lastChecked: Date;
+  teamId?: string;
+  schedule: { id?: string; date: string }[];
+  fetchedAt: number;
   executeCallback: () => void;
 }
 
 export class ScoreboardService {
-  private trackedTeams: Map<string, TrackedTeam> = new Map();
-  private checkInterval: NodeJS.Timeout | null = null;
-  private pollTimer: NodeJS.Timeout | null = null;
-  private isPollCycleRunning: boolean = false;
+  private trackedTeams = new Map<string, TrackedTeam>();
+  private states: Record<string, GameState> = {};
+  private timer: NodeJS.Timeout | null = null;
+  private busy = false;
+  private statePath = path.join(process.env.DATA_DIR || path.join(__dirname, '../../'), 'sports-state.json');
 
-  constructor() {}
+  constructor() {
+    try { this.states = JSON.parse(fs.readFileSync(this.statePath, 'utf8')); }
+    catch (err: any) { if (err.code !== 'ENOENT') console.warn('Could not read sports checkpoints:', err.message); }
+  }
 
   public registerFlow(flow: Flow, executeCallback: () => void): void {
     if (flow.trigger.type !== 'sports_score') return;
-
-    const trigger = flow.trigger as SportsScoreTrigger;
-    const key = flow.id;
-
-    console.log(`Registering sports trigger for flow '${flow.name}': Team '${trigger.properties.team}' in ${trigger.properties.league}`);
-
-    // If already tracked, keep relevant cached state
-    const existing = this.trackedTeams.get(key);
-    this.trackedTeams.set(key, {
-      flowId: flow.id,
-      trigger,
-      teamId: existing ? existing.teamId : undefined,
-      gameStartTimes: existing ? existing.gameStartTimes : [],
-      lastScheduleFetch: existing ? existing.lastScheduleFetch : null,
-      lastCompletedGameTime: existing ? existing.lastCompletedGameTime : undefined,
-      currentGameStartTime: existing ? existing.currentGameStartTime : undefined,
-      isGameActive: existing ? existing.isGameActive : false,
-      lastScore: existing ? existing.lastScore : null,
-      gameState: existing ? existing.gameState : 'unknown',
-      lastChecked: new Date(),
-      executeCallback
-    });
-
+    const old = this.trackedTeams.get(flow.id);
+    const sameTeam = old && ['sport', 'league', 'team'].every(k => (old.trigger.properties as any)[k] === (flow.trigger.properties as any)[k]);
+    this.trackedTeams.set(flow.id, { flowId: flow.id, trigger: flow.trigger, teamId: sameTeam ? old.teamId : undefined,
+      schedule: sameTeam ? old.schedule : [], fetchedAt: sameTeam ? old.fetchedAt : 0, executeCallback });
     this.startPolling();
   }
 
-  public unregisterFlow(flowId: string): void {
-    if (this.trackedTeams.has(flowId)) {
-      console.log(`Unregistering sports trigger for flow ID '${flowId}'`);
-      this.trackedTeams.delete(flowId);
-    }
-
-    if (this.trackedTeams.size === 0) {
-      this.stopPolling();
-    }
+  public unregisterFlow(id: string): void {
+    this.trackedTeams.delete(id);
+    if (!this.trackedTeams.size) this.stopPolling();
   }
 
-  public clear(): void {
-    console.log('Clearing all tracked sports teams and stopping poller.');
-    this.trackedTeams.clear();
-    this.stopPolling();
+  public syncFlows(flows: Flow[], callback: (flow: Flow) => void): void {
+    const enabled = flows.filter(f => f.enabled && f.trigger.type === 'sports_score');
+    for (const id of this.trackedTeams.keys()) if (!enabled.some(f => f.id === id)) this.unregisterFlow(id);
+    for (const flow of enabled) this.registerFlow(flow, () => callback(flow));
   }
 
+  public clear(): void { this.trackedTeams.clear(); this.stopPolling(); }
   public startPolling(): void {
-    if (this.checkInterval) return;
-    console.log('Starting Sports Scoreboard Scheduler...');
-    
-    // Run checking cycle immediately
-    this.checkSchedulesAndPoll();
-    
-    // Run every minute (60000 ms)
-    this.checkInterval = setInterval(() => {
-      this.checkSchedulesAndPoll();
-    }, 60000);
+    if (this.timer) return;
+    this.timer = setInterval(() => { void this.poll(); }, 30000);
+    void this.poll();
+  }
+  public stopPolling(): void { if (this.timer) clearInterval(this.timer); this.timer = null; }
+
+  private saveState(): void {
+    // Keep recent games only; each checkpoint includes flow, team and event identity.
+    const keys = Object.keys(this.states);
+    for (const key of keys.slice(0, Math.max(0, keys.length - 500))) delete this.states[key];
+    fs.mkdirSync(path.dirname(this.statePath), { recursive: true });
+    fs.writeFileSync(this.statePath + '.tmp', JSON.stringify(this.states));
+    fs.renameSync(this.statePath + '.tmp', this.statePath);
   }
 
-  public stopPolling(): void {
-    if (this.checkInterval) {
-      clearInterval(this.checkInterval);
-      this.checkInterval = null;
+  private async refreshSchedule(team: TrackedTeam): Promise<void> {
+    const props = team.trigger.properties;
+    if (props.scheduleMode === 'manual') {
+      team.schedule = (props.manualSchedule || []).filter(d => Number.isFinite(Date.parse(d))).map(date => ({ date }));
+      return;
     }
-    if (this.pollTimer) {
-      clearTimeout(this.pollTimer);
-      this.pollTimer = null;
+    if (Date.now() - team.fetchedAt < 15 * 60 * 1000 && team.schedule.length) return;
+    const root = `https://site.api.espn.com/apis/site/v2/sports/${props.sport.toLowerCase()}/${props.league.toLowerCase()}`;
+    if (!team.teamId) {
+      const data = (await axios.get(`${root}/teams?limit=1000`, { timeout: 10000 })).data;
+      const name = props.team.toLowerCase().trim();
+      const match = data?.sports?.[0]?.leagues?.[0]?.teams?.find((entry: any) =>
+        ['name', 'displayName', 'abbreviation', 'shortDisplayName'].some(k => entry.team?.[k]?.toLowerCase().trim() === name));
+      if (!match) throw new Error(`ESPN team not found: ${props.team}`);
+      team.teamId = match.team.id;
     }
-    console.log('Stopped Sports Scoreboard poller/scheduler.');
+    const data = (await axios.get(`${root}/teams/${team.teamId}/schedule`, { timeout: 10000 })).data;
+    if (!Array.isArray(data?.events)) throw new Error('ESPN schedule has no events array');
+    team.schedule = data.events.filter((e: any) => Number.isFinite(Date.parse(e.date))).map((e: any) => ({ id: e.id, date: e.date }));
+    team.fetchedAt = Date.now();
   }
 
-  private async checkSchedulesAndPoll(): Promise<void> {
-    const now = new Date();
-    let anyGameActive = false;
-
-    for (const tracked of this.trackedTeams.values()) {
-      // 1. Resolve/refresh schedule based on mode
-      const mode = tracked.trigger.properties.scheduleMode || 'auto';
-      if (mode === 'manual') {
-        const manual = tracked.trigger.properties.manualSchedule || [];
-        tracked.gameStartTimes = manual
-          .map(str => new Date(str))
-          .filter(d => !isNaN(d.getTime()))
-          .sort((a, b) => a.getTime() - b.getTime());
-        tracked.lastScheduleFetch = new Date();
-      } else {
-        // Auto mode
-        const needsFetch = !tracked.lastScheduleFetch || 
-                           (now.getTime() - tracked.lastScheduleFetch.getTime() > 12 * 60 * 60 * 1000) ||
-                           (tracked.gameStartTimes.length === 0 && (!tracked.lastScheduleFetch || now.getTime() - tracked.lastScheduleFetch.getTime() > 1 * 60 * 60 * 1000));
-        if (needsFetch) {
-          await this.refreshAutoSchedule(tracked);
-        }
-      }
-
-      // 2. Check if a game is currently active
-      let isThisGameActive = false;
-      for (const gameTime of tracked.gameStartTimes) {
-        const timeDiffMs = now.getTime() - gameTime.getTime();
-        const fifteenMinsMs = 15 * 60 * 1000;
-        const fiveHoursMs = 5 * 60 * 60 * 1000;
-
-        // Active if current time is between S - 15 minutes and S + 5 hours
-        if (timeDiffMs >= -fifteenMinsMs && timeDiffMs <= fiveHoursMs) {
-          const gameTimeStr = gameTime.toISOString();
-          if (tracked.lastCompletedGameTime !== gameTimeStr) {
-            isThisGameActive = true;
-            tracked.currentGameStartTime = gameTimeStr;
-            break;
-          }
-        }
-      }
-
-      tracked.isGameActive = isThisGameActive;
-      if (isThisGameActive) {
-        anyGameActive = true;
-      }
-    }
-
-    // 3. Manage the score polling timer
-    if (anyGameActive) {
-      if (!this.pollTimer && !this.isPollCycleRunning) {
-        console.log('Active sports game(s) detected. Starting high-frequency scoreboard polling...');
-        this.runPollCycle();
-      }
-    } else {
-      if (this.pollTimer) {
-        console.log('No active sports games. Stopping scoreboard polling...');
-        clearTimeout(this.pollTimer);
-        this.pollTimer = null;
-      }
-    }
-  }
-
-  private async runPollCycle(): Promise<void> {
-    this.isPollCycleRunning = true;
+  private async poll(): Promise<void> {
+    if (this.busy) return;
+    this.busy = true;
     try {
-      await this.pollAllLeagues();
-    } catch (err) {
-      console.error('Error in sports poll cycle:', err);
-    } finally {
-      this.isPollCycleRunning = false;
-    }
-
-    // Double check if we still have active games
-    let stillHasActiveGame = false;
-    for (const team of this.trackedTeams.values()) {
-      if (team.isGameActive) {
-        stillHasActiveGame = true;
-        break;
+      const groups = new Map<string, { teams: TrackedTeam[]; dates: number[] }>();
+      for (const team of this.trackedTeams.values()) {
+        try {
+          await this.refreshSchedule(team);
+          if (this.trackedTeams.get(team.flowId) !== team) continue;
+          const active = team.schedule.filter(g => Date.now() - Date.parse(g.date) >= -15 * 60 * 1000 && Date.now() - Date.parse(g.date) <= 8 * 60 * 60 * 1000);
+          if (!active.length) continue;
+          const key = `${team.trigger.properties.sport.toLowerCase()}/${team.trigger.properties.league.toLowerCase()}`;
+          const group = groups.get(key) || { teams: [], dates: [] };
+          group.teams.push(team); group.dates.push(...active.map(g => Date.parse(g.date))); groups.set(key, group);
+        } catch (err: any) { console.error(`Sports schedule ${team.trigger.properties.team}:`, err.message); }
       }
-    }
-
-    if (stillHasActiveGame) {
-      this.pollTimer = setTimeout(() => this.runPollCycle(), 30000);
-    } else {
-      this.pollTimer = null;
-    }
+      for (const [league, group] of groups) {
+        try {
+          const day = (ms: number) => new Date(ms).toISOString().slice(0, 10).replace(/-/g, '');
+          const dates = `${day(Math.min(...group.dates) - 86400000)}-${day(Math.max(...group.dates) + 86400000)}`;
+          const college = league.endsWith('/college-football') ? '&groups=80' : '';
+          const data = (await axios.get(`https://site.api.espn.com/apis/site/v2/sports/${league}/scoreboard?limit=1000&dates=${dates}${college}`, { timeout: 10000 })).data;
+          if (!Array.isArray(data?.events)) throw new Error('ESPN scoreboard has no events array');
+          this.processLeagueEvents(data.events, group.teams.filter(t => this.trackedTeams.get(t.flowId) === t));
+        } catch (err: any) { console.error(`Sports scoreboard ${league}:`, err.message); }
+      }
+    } finally { this.busy = false; }
   }
 
-  private async refreshAutoSchedule(tracked: TrackedTeam): Promise<void> {
-    const { sport, league, team } = tracked.trigger.properties;
-    console.log(`Refreshing auto schedule for ${team} (${sport}/${league})...`);
-    
-    try {
-      let teamId = tracked.teamId;
-      if (!teamId) {
-        const fetchedId = await this.fetchTeamId(sport, league, team);
-        if (fetchedId) {
-          tracked.teamId = fetchedId;
-          teamId = fetchedId;
-        } else {
-          console.error(`Could not find team ID for team: ${team}`);
-          tracked.lastScheduleFetch = new Date(); // prevent fast retrying on failure
-          return;
-        }
-      }
-
-      const url = `https://site.api.espn.com/apis/site/v2/sports/${sport.toLowerCase()}/${league.toLowerCase()}/teams/${teamId}/schedule`;
-      const response = await axios.get(url, { timeout: 10000 });
-      const events = response.data?.events;
-      if (Array.isArray(events)) {
-        const gameTimes: Date[] = [];
-        for (const event of events) {
-          if (event.date) {
-            gameTimes.push(new Date(event.date));
-          }
-        }
-        gameTimes.sort((a, b) => a.getTime() - b.getTime());
-        tracked.gameStartTimes = gameTimes;
-        console.log(`Successfully loaded ${gameTimes.length} games for ${team}.`);
-      }
-      tracked.lastScheduleFetch = new Date();
-    } catch (err: any) {
-      console.error(`Failed to refresh schedule for ${team}:`, err.message);
-      tracked.lastScheduleFetch = new Date(); // prevent fast retrying on failure
-    }
-  }
-
-  private async fetchTeamId(sport: string, league: string, teamName: string): Promise<string | null> {
-    const url = `https://site.api.espn.com/apis/site/v2/sports/${sport.toLowerCase()}/${league.toLowerCase()}/teams?limit=100`;
-    try {
-      const response = await axios.get(url, { timeout: 10000 });
-      const teamsData = response.data?.sports?.[0]?.leagues?.[0]?.teams;
-      if (!Array.isArray(teamsData)) return null;
-      
-      const searchName = teamName.toLowerCase().trim();
-      for (const t of teamsData) {
-        const team = t.team;
-        if (!team) continue;
-        
-        const name = team.name?.toLowerCase().trim();
-        const displayName = team.displayName?.toLowerCase().trim();
-        const abbreviation = team.abbreviation?.toLowerCase().trim();
-        const shortDisplayName = team.shortDisplayName?.toLowerCase().trim();
-        
-        if (name === searchName || 
-            displayName === searchName || 
-            abbreviation === searchName || 
-            shortDisplayName === searchName) {
-          return team.id;
-        }
-      }
-    } catch (err: any) {
-      console.error(`Failed to fetch team list for ID lookup:`, err.message);
-    }
-    return null;
-  }
-
-  private async pollAllLeagues(): Promise<void> {
-    const leagueGroups: { [key: string]: { sport: string; league: string; teams: TrackedTeam[] } } = {};
-
-    for (const tracked of this.trackedTeams.values()) {
-      if (!tracked.isGameActive) continue;
-
-      const sport = tracked.trigger.properties.sport.toLowerCase();
-      const league = tracked.trigger.properties.league.toLowerCase();
-      const key = `${sport}/${league}`;
-
-      if (!leagueGroups[key]) {
-        leagueGroups[key] = { sport, league, teams: [] };
-      }
-      leagueGroups[key].teams.push(tracked);
-    }
-
-    for (const groupKey of Object.keys(leagueGroups)) {
-      const { sport, league, teams } = leagueGroups[groupKey];
-      try {
-        const url = `https://site.api.espn.com/apis/site/v2/sports/${sport}/${league}/scoreboard`;
-        const response = await axios.get(url, { timeout: 10000 });
-        const data = response.data;
-
-        if (!data || !Array.isArray(data.events)) {
-          continue;
-        }
-
-        this.processLeagueEvents(data.events, teams);
-      } catch (err: any) {
-        console.error(`Failed to fetch scoreboard for ${sport}/${league}:`, err.message);
-      }
-    }
-  }
-
-  private processLeagueEvents(events: any[], trackedTeams: TrackedTeam[]): void {
-    for (const tracked of trackedTeams) {
-      const targetTeamName = tracked.trigger.properties.team.toLowerCase();
-      let gameFound = false;
-
+  private processLeagueEvents(events: any[], teams: TrackedTeam[]): void {
+    // Process score celebrations before win celebrations, so a win can take priority.
+    const ordered = [...teams].sort((a, b) => Number(a.trigger.properties.event === 'win') - Number(b.trigger.properties.event === 'win'));
+    for (const team of ordered) {
+      const props = team.trigger.properties;
+      const name = props.team.trim().toLowerCase();
       for (const event of events) {
+        if (!event.id || !team.schedule.some(g => g.id ? g.id === event.id : Math.abs(Date.parse(g.date) - Date.parse(event.date)) < 12 * 60 * 60 * 1000)) continue;
         const competition = event.competitions?.[0];
-        if (!competition || !Array.isArray(competition.competitors)) continue;
-
-        const competitors = competition.competitors;
-        const myTeamData = competitors.find((c: any) => 
-          c.team?.name?.toLowerCase() === targetTeamName ||
-          c.team?.displayName?.toLowerCase() === targetTeamName ||
-          c.team?.abbreviation?.toLowerCase() === targetTeamName ||
-          c.team?.shortDisplayName?.toLowerCase() === targetTeamName
-        );
-
-        if (myTeamData) {
-          gameFound = true;
-          const gameState = event.status?.type?.state || 'unknown'; // 'pre', 'in', 'post'
-          const score = parseInt(myTeamData.score || '0', 10);
-
-          const previousState = tracked.gameState;
-          const previousScore = tracked.lastScore;
-
-          tracked.gameState = gameState;
-          tracked.lastChecked = new Date();
-
-          if (previousState !== gameState) {
-            console.log(`Game state for ${tracked.trigger.properties.team} changed from ${previousState} to ${gameState}`);
-          }
-
-          if (gameState === 'in') {
-            if (previousScore !== null && score > previousScore) {
-              console.log(`Score increase detected for ${tracked.trigger.properties.team}! ${previousScore} -> ${score}. TRIGGERING CELEBRATION!`);
-              tracked.executeCallback();
-            }
-            tracked.lastScore = score;
-          } else if (gameState === 'pre') {
-            tracked.lastScore = 0;
-          } else if (gameState === 'post') {
-            tracked.lastScore = score;
-            
-            // Mark the active game as completed so we stop polling it
-            if (tracked.currentGameStartTime) {
-              console.log(`Game starting at ${tracked.currentGameStartTime} for ${tracked.trigger.properties.team} is marked post/completed. Stopping polling for this game.`);
-              tracked.lastCompletedGameTime = tracked.currentGameStartTime;
-              tracked.currentGameStartTime = undefined;
-              tracked.isGameActive = false;
-            }
-          }
-          break;
+        const mine = competition?.competitors?.find((c: any) => team.teamId ? c.team?.id === team.teamId :
+          ['name', 'displayName', 'abbreviation', 'shortDisplayName'].some(k => c.team?.[k]?.toLowerCase() === name));
+        if (!mine) continue;
+        const score = Number(mine.score);
+        const state = event.status?.type?.state || competition.status?.type?.state;
+        if (!Number.isFinite(score) || !['pre', 'in', 'post'].includes(state)) continue;
+        const key = [team.flowId, props.sport, props.league, team.teamId || name, props.event || 'score', event.id].join(':');
+        const previous = this.states[key];
+        const won = state === 'post' && mine.winner === true;
+        // A first observation establishes a baseline; never celebrate an old score or final on startup.
+        const fire = !!previous && (props.event === 'kickoff'
+          ? previous.state === 'pre' && state === 'in'
+          : props.event === 'win'
+          ? won && !previous.winHandled
+          : (state === 'in' || state === 'post') && score > previous.score);
+        this.states[key] = { score, state, winHandled: previous?.winHandled || state === 'post' };
+        try { this.saveState(); }
+        catch (err: any) { console.error('Cannot checkpoint sports event; skipping celebration:', err.message); continue; }
+        if (fire) {
+          console.log(`[Sports] ${props.team} ${props.event || 'score'} event ${event.id}: ${previous.score} -> ${score}`);
+          team.executeCallback();
         }
       }
     }

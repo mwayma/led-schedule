@@ -2353,6 +2353,11 @@ export default function App() {
                               </div>
                             </div>
                             <div>
+                              <label>Sports Event</label>
+                              <select value={sportsProps.event || 'score'} onChange={e => updateFlowTrigger('sports_score', { ...sportsProps, event: e.target.value })}>
+                                <option value="score">Team scores (any score increase)</option>
+                                <option value="win">Team wins (confirmed final)</option><option value="kickoff">Kickoff (game starts)</option>
+                              </select>
                               <label>Team Name (ESPN Spelling)</label>
                               <input 
                                 type="text"
@@ -2621,7 +2626,7 @@ export default function App() {
 
                             {flow.trigger.type === 'sports_score' && (
                               <div style={{ color: 'var(--text-muted)', fontSize: '11px' }}>
-                                <span>ESPN: <strong>{(flow.trigger.properties as any).team}</strong> ({(flow.trigger.properties as any).league?.toUpperCase()}) - Mode: <strong>{(flow.trigger.properties as any).scheduleMode || 'auto'}</strong></span>
+                                <span>{(flow.trigger.properties as any).event === 'win' ? 'WIN' : 'SCORE'} • ESPN: <strong>{(flow.trigger.properties as any).team}</strong> ({(flow.trigger.properties as any).league?.toUpperCase()}) - Mode: <strong>{(flow.trigger.properties as any).scheduleMode || 'auto'}</strong></span>
                               </div>
                             )}
 
@@ -3417,5 +3422,4 @@ export default function App() {
     </div>
   );
 }
-
 

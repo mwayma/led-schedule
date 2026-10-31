@@ -175,3 +175,24 @@ test('October 31 overnight run stops at November 1 midnight Central, never start
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(requests.length, 0, 'no September 30 occurrence to end');
 });
+
+test('sports celebration reserves its canvas and restores the held scheduled scene', async () => {
+  const {service,flows}=orchestrator(); const held={id:'held',type:'start_effect',properties:{canvasId:1,effect:{type:'13PaletteEffect',name:'Halloween'}}};
+  flows.push({id:'night',enabled:true,trigger:{type:'time',properties:{}},actions:[held]});
+  flows.push({id:'score',enabled:true,trigger:{type:'sports_score',properties:{}},actions:[{...held,properties:{...held.properties,effect:{name:'Maize'}}}]});
+  service.activeExecutions.set('night',new AbortController());service.activeCanvasActions.set(1,held);
+  const starts=[];service.handleStartEffect=async a=>starts.push(a.properties.effect.name);
+  await service.executeFlow('score');
+  assert.deepEqual(starts,['Maize','Halloween']);assert.equal(service.sportsOwners.size,0);assert.equal(service.activeExecutions.has('score'),false);
+});
+test('time actions cannot overwrite a sports celebration but track the scene to resume',async()=>{
+  const{service}=orchestrator();service.sportsOwners.set(1,new AbortController());const actions=[];service.handleStartEffect=async a=>actions.push(a);service.handleStopEffect=async()=>actions.push('off');
+  const held={id:'next',type:'start_effect',properties:{canvasId:1,effect:{name:'Next scene'}}};
+  await service.runActions([held,{type:'stop_effect',properties:{canvasId:1}}],new AbortController().signal);
+  assert.equal(actions.length,0);assert.equal(service.activeCanvasActions.get(1).id,'next');
+});
+test('sports celebration outside a scheduled window returns to lights off',async()=>{
+  const{service,flows}=orchestrator();flows.push({id:'win',enabled:true,trigger:{type:'sports_score',properties:{}},actions:[{type:'start_effect',properties:{canvasId:1,effect:{name:'Win'}}}]});
+  const calls=[];service.handleStartEffect=async()=>calls.push('on');service.handleStopEffect=async()=>calls.push('off');service.checkTimeTriggerTick=async()=>calls.push('reconcile');
+  await service.executeFlow('win');assert.deepEqual(calls,['on','off','reconcile']);
+});
