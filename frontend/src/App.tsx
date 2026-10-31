@@ -323,6 +323,7 @@ export default function App() {
   const [showAddFeatureModal, setShowAddFeatureModal] = useState(false);
   const [editingFeatureId, setEditingFeatureId] = useState<number | null>(null);
   const [selectedCanvasIdForFeature, setSelectedCanvasIdForFeature] = useState<number | null>(null);
+  const [featureTargetCanvasId, setFeatureTargetCanvasId] = useState<number | null>(null);
   const [featFriendlyName, setFeatFriendlyName] = useState('');
   const [featHostName, setFeatHostName] = useState('');
   const [featPort, setFeatPort] = useState('49152');
@@ -564,6 +565,7 @@ export default function App() {
   };
 
   const handleAddFeatureClick = (canvasId: number) => {
+    setFeatureTargetCanvasId(canvasId);
     setSelectedCanvasIdForFeature(canvasId);
     setEditingFeatureId(null);
     setFeatFriendlyName('');
@@ -581,6 +583,7 @@ export default function App() {
   };
 
   const handleEditFeatureClick = (canvasId: number, feature: any) => {
+    setFeatureTargetCanvasId(canvasId);
     setSelectedCanvasIdForFeature(canvasId);
     setEditingFeatureId(feature.id);
     setFeatFriendlyName(feature.friendlyName);
@@ -623,11 +626,11 @@ export default function App() {
       setServerLoading(true);
       
       if (editingFeatureId !== null) {
-        // Update feature
-        const res = await fetch(`${API_BASE}/api/config/canvases/${selectedCanvasIdForFeature}/features/${editingFeatureId}`, {
-          method: 'PUT',
+        const moving = featureTargetCanvasId !== null && featureTargetCanvasId !== selectedCanvasIdForFeature;
+        const res = await fetch(`${API_BASE}/api/config/canvases/${selectedCanvasIdForFeature}/features/${editingFeatureId}${moving ? '/move' : ''}`, {
+          method: moving ? 'POST' : 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(featureBody)
+          body: JSON.stringify(moving ? { targetCanvasId: featureTargetCanvasId, feature: featureBody } : featureBody)
         });
         if (res.ok) {
           setShowAddFeatureModal(false);
@@ -3253,13 +3256,24 @@ export default function App() {
         <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: '100vh', background: 'rgba(4,6,10,0.85)', backdropFilter: 'blur(8px)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 100, padding: '16px' }}>
           <div className="glass-panel" style={{ width: '100%', maxWidth: '500px', maxHeight: '90vh', overflowY: 'auto', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
             <h3 style={{ fontSize: '18px', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Cpu size={18} style={{ color: 'var(--color-primary)' }} /> {editingFeatureId ? 'Edit LED Feature Strip' : 'Add LED Feature Strip'}
+              <Cpu size={18} style={{ color: 'var(--color-primary)' }} /> {editingFeatureId !== null ? 'Edit LED Feature Strip' : 'Add LED Feature Strip'}
             </h3>
             <span style={{ fontSize: '12px', color: 'var(--text-secondary)' }}>
-              {editingFeatureId ? 'Update the configuration for this LED controller.' : 'Configure a physical LED strip connection mapped to this canvas target.'}
+              {editingFeatureId !== null ? 'Update the configuration for this LED controller.' : 'Configure a physical LED strip connection mapped to this canvas target.'}
             </span>
 
             <form onSubmit={handleSaveFeature} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              {editingFeatureId !== null && (
+                <div>
+                  <label htmlFor="feat-target-canvas">Canvas Target</label>
+                  <select id="feat-target-canvas" value={featureTargetCanvasId ?? selectedCanvasIdForFeature ?? ''}
+                    onChange={e => setFeatureTargetCanvasId(Number(e.target.value))}>
+                    {canvases.filter(canvas => !canvas.unconfigured).map(canvas => (
+                      <option key={canvas.id} value={canvas.id}>{canvas.name} (ID {canvas.id})</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
                 <label htmlFor="feat-friendly-name">Friendly Name</label>
                 <input

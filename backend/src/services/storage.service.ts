@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import { Manifest, Flow, SystemSettings, LEDCanvasConfig } from '../types';
+import { Manifest, Flow, SystemSettings, LEDCanvasConfig, LEDFeatureConfig } from '../types';
 
 export class StorageService {
   private manifestPath: string;
@@ -186,6 +186,15 @@ export class StorageService {
     return false;
   }
 
+  public moveFeature(sourceId: number, featureId: number, targetId: number, feature: LEDFeatureConfig): void {
+    const manifest = this.loadManifest();
+    this.saveManifestDirect({ ...manifest, canvases: (manifest.canvases || []).map(canvas => {
+      if (canvas.id === sourceId) return { ...canvas, features: canvas.features.filter(f => f.id !== featureId) };
+      if (canvas.id === targetId) return { ...canvas, features: [...canvas.features, feature] };
+      return canvas;
+    }) });
+  }
+
   public reconcileCanvasId(oldId: number, newId: number): void {
     const manifest = this.loadManifest();
     
@@ -224,3 +233,4 @@ export class StorageService {
 
 // Export a singleton instance
 export const storageService = new StorageService();
+
