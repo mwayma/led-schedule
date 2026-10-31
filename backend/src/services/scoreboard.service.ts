@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SportsScoreTrigger, Flow } from '../types';
 
-interface GameState { score: number; state: string; winHandled: boolean; }
+interface GameState { score: number; state: string; winHandled: boolean; kickoffHandled?: boolean; }
 interface TrackedTeam {
   flowId: string;
   trigger: SportsScoreTrigger;
@@ -103,11 +103,19 @@ export class ScoreboardService {
       for (const [league, group] of groups) {
         try {
           const day = (ms: number) => new Date(ms).toISOString().slice(0, 10).replace(/-/g, '');
-          const dates = `${day(Math.min(...group.dates) - 86400000)}-${day(Math.max(...group.dates) + 86400000)}`;
           const college = league.endsWith('/college-football') ? '&groups=80' : '';
-          const data = (await axios.get(`https://site.api.espn.com/apis/site/v2/sports/${league}/scoreboard?limit=1000&dates=${dates}${college}`, { timeout: 10000 })).data;
-          if (!Array.isArray(data?.events)) throw new Error('ESPN scoreboard has no events array');
-          this.processLeagueEvents(data.events, group.teams.filter(t => this.trackedTeams.get(t.flowId) === t));
+          // ESPN football rejects date ranges. Query individual days; the prior
+          // UTC day covers evening US kickoffs listed on their local date.
+          const dates = [...new Set(group.dates.flatMap(ms => [day(ms), day(ms - 86400000)]))];
+          const events = new Map<string, any>();
+          for (const date of dates) {
+            try {
+              const data = (await axios.get(`https://site.api.espn.com/apis/site/v2/sports/${league}/scoreboard?limit=1000&dates=${date}${college}`, { timeout: 10000 })).data;
+              if (!Array.isArray(data?.events)) throw new Error('ESPN scoreboard has no events array');
+              for (const event of data.events) if (!events.has(event.id)) events.set(event.id, event);
+            } catch (err: any) { console.error(`Sports daily feed ${league}/${date}:`, err.message); }
+          }
+          this.processLeagueEvents([...events.values()], group.teams.filter(t => this.trackedTeams.get(t.flowId) === t));
         } catch (err: any) { console.error(`Sports scoreboard ${league}:`, err.message); }
       }
     } finally { this.busy = false; }
@@ -132,12 +140,18 @@ export class ScoreboardService {
         const previous = this.states[key];
         const won = state === 'post' && mine.winner === true;
         // A first observation establishes a baseline; never celebrate an old score or final on startup.
+        const victoryReady = won && teams.some(t => {
+          if (t.trigger.properties.event !== 'win' || t.teamId !== team.teamId || t.trigger.properties.team !== props.team) return false;
+          const winKey = [t.flowId, props.sport, props.league, t.teamId || name, 'win', event.id].join(':');
+          return this.states[winKey] && !this.states[winKey].winHandled;
+        });
         const fire = !!previous && (props.event === 'kickoff'
-          ? previous.state === 'pre' && state === 'in'
+          ? !previous.kickoffHandled && previous.state === 'pre' && state === 'in'
           : props.event === 'win'
           ? won && !previous.winHandled
-          : (state === 'in' || state === 'post') && score > previous.score);
-        this.states[key] = { score, state, winHandled: previous?.winHandled || state === 'post' };
+          : !victoryReady && (state === 'in' || state === 'post') && score > previous.score);
+        this.states[key] = { score: Math.max(previous?.score ?? score, score), state,
+          winHandled: previous?.winHandled || state === 'post', kickoffHandled: previous?.kickoffHandled || state !== 'pre' };
         try { this.saveState(); }
         catch (err: any) { console.error('Cannot checkpoint sports event; skipping celebration:', err.message); continue; }
         if (fire) {
