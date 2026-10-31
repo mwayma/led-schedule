@@ -3407,7 +3407,7 @@ export default function App() {
                   Cancel
                 </button>
                 <button type="submit" className="btn-primary" disabled={serverLoading}>
-                  {editingFeatureId ? 'Save Feature' : 'Add Feature'}
+                  {editingFeatureId !== null ? 'Save Feature' : 'Add Feature'}
                 </button>
               </div>
             </form>
@@ -3417,4 +3417,5 @@ export default function App() {
     </div>
   );
 }
+
 
