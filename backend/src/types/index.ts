@@ -34,6 +34,7 @@ export interface SportsScoreTrigger extends BaseTrigger {
     sport: string; // e.g., 'football', 'hockey'
     league: string; // e.g., 'nfl', 'nhl'
     team: string; // e.g., 'Green Bay Packers', 'Chicago Blackhawks'
+    event?: 'score' | 'win' | 'kickoff';
     pollIntervalSeconds?: number;
     scheduleMode?: 'auto' | 'manual';
     manualSchedule?: string[];

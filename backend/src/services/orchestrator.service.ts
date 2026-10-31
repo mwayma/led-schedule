@@ -12,6 +12,7 @@ export class OrchestratorService {
   private previewUntil = new Map<number, number>();
   private stoppingCanvases = new Set<number>();
   private startingCanvases = new Set<number>();
+  private sportsOwners = new Map<number, AbortController>();
   private activeCanvasActions = new Map<number, StartEffectAction>();
 
   public async previewEffect(canvasId: number, effect: StartEffectAction['properties']['effect']): Promise<void> {
@@ -35,8 +36,8 @@ export class OrchestratorService {
       this.cronTasks.delete(flowId);
     }
 
-    // Clear all sports scoreboard triggers to prevent stale/deleted flows from being polled
-    scoreboardService.clear();
+    // Update sports registrations without discarding per-game score checkpoints.
+    scoreboardService.syncFlows(storageService.getFlows(), flow => { void this.executeFlow(flow.id); });
 
     // Load flows from storage
     const flows = storageService.getFlows();
@@ -68,10 +69,7 @@ export class OrchestratorService {
           console.log(`Scheduled granular time range trigger for flow '${flow.name}' from ${timeTrigger.properties.startTime} to ${timeTrigger.properties.endTime || 'No end time'}`);
         }
       } else if (trigger.type === 'sports_score') {
-        scoreboardService.registerFlow(flow, () => {
-          console.log(`Sports trigger fired for flow: ${flow.name} (${flow.id})`);
-          this.executeFlow(flow.id);
-        });
+        // Sports registrations are synchronized above without clearing score checkpoints.
       } else if (trigger.type === 'webhook') {
         console.log(`Webhook trigger active for flow '${flow.name}' (Token: ${trigger.properties.token})`);
       }
@@ -101,6 +99,9 @@ export class OrchestratorService {
     this.activeExecutions.set(flowId, controller);
     console.log(`Starting execution of flow: ${flow.name}`);
 
+    const sports = flow.trigger.type === 'sports_score';
+    const targets = sports ? [...new Set(flow.actions.filter(a => a.type === 'start_effect').map(a => (a.properties as any).canvasId as number))] : [];
+    for (const id of targets) { this.sportsOwners.get(id)?.abort(); this.sportsOwners.set(id, controller); }
     try {
       const repeating = flow.repeatUntilEnd && flow.trigger.type === 'time' &&
         flow.trigger.properties.startTime && flow.trigger.properties.endTime;
@@ -108,7 +109,7 @@ export class OrchestratorService {
         throw new Error('Repeating flows require a positive delay between cycles.');
       }
       do {
-        await this.runActions(flow.actions, controller.signal);
+        await this.runActions(flow.actions, controller.signal, sports ? controller : undefined);
       } while (repeating && !controller.signal.aborted);
       console.log(`Successfully completed execution of flow: ${flow.name}`);
     } catch (err: any) {
@@ -118,13 +119,21 @@ export class OrchestratorService {
         console.error(`Error executing flow ${flow.name}:`, err.message || err);
       }
     } finally {
+      for (const id of targets) {
+        if (this.sportsOwners.get(id) !== controller) continue;
+        this.sportsOwners.delete(id);
+        const scheduled = storageService.getFlows().some(f => f.enabled && f.trigger.type === 'time' && this.activeExecutions.has(f.id) && f.actions.some(a => a.type === 'start_effect' && a.properties.canvasId === id));
+        const held = this.activeCanvasActions.get(id);
+        if (scheduled && held) await this.handleStartEffect(held);
+        else { await this.handleStopEffect(id); await this.checkTimeTriggerTick(); }
+      }
       if (this.activeExecutions.get(flowId) === controller) {
         this.activeExecutions.delete(flowId);
       }
     }
   }
 
-  private async runActions(actions: Action[], signal: AbortSignal): Promise<void> {
+  private async runActions(actions: Action[], signal: AbortSignal, sportsOwner?: AbortController): Promise<void> {
     for (const action of actions) {
       if (signal.aborted) {
         throw new Error('Aborted');
@@ -134,10 +143,12 @@ export class OrchestratorService {
       
       switch (action.type) {
         case 'start_effect':
-          this.activeCanvasActions.set(action.properties.canvasId, action as StartEffectAction);
+          if (!sportsOwner) this.activeCanvasActions.set(action.properties.canvasId, action as StartEffectAction);
+          if (this.sportsOwners.has(action.properties.canvasId) && this.sportsOwners.get(action.properties.canvasId) !== sportsOwner) break;
           await this.handleStartEffect(action as StartEffectAction);
           break;
         case 'stop_effect':
+          if (this.sportsOwners.has(action.properties.canvasId) && this.sportsOwners.get(action.properties.canvasId) !== sportsOwner) break;
           await this.handleStopEffect(action.properties.canvasId);
           break;
         case 'delay':
@@ -532,12 +543,14 @@ export class OrchestratorService {
         const localCanvases = storageService.getCanvases();
 
         for (const canvas of localCanvases) {
+          if (this.sportsOwners.has(canvas.id)) continue;
           // Explicit live tests temporarily override the date/time reconciler.
           if ((this.previewUntil.get(canvas.id) ?? 0) > Date.now()) continue;
           this.previewUntil.delete(canvas.id);
           // Find all enabled flows targeting this canvas
           const flowsTargetingCanvas = flows.filter(f => 
             f.enabled && 
+            f.trigger.type === 'time' &&
             f.actions.some(act => act.type === 'start_effect' && (act.properties as any).canvasId === canvas.id)
           );
 
