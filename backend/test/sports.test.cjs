@@ -1,6 +1,6 @@
 const {test}=require('node:test'); const assert=require('node:assert/strict'); const fs=require('node:fs'); const vm=require('node:vm'); const path=require('node:path'); const {stripTypeScriptTypes}=require('node:module');
 const source=stripTypeScriptTypes(fs.readFileSync(`${__dirname}/../src/services/scoreboard.service.ts`,'utf8')).replace(/^import .*;\s*$/gm,'').replace(/export /g,'');
-function setup(files={},options={}) {const requests=[]; const fakeFS={readFileSync:p=>{if(!(p in files))throw Object.assign(new Error('missing'),{code:'ENOENT'});return files[p]},mkdirSync(){},writeFileSync:(p,s)=>files[p]=s,renameSync:(a,b)=>{files[b]=files[a];delete files[a]}}; const api=vm.runInNewContext(`${source}\nnew ScoreboardService()`,{axios:{get:async url=>{requests.push(url);if(url.includes('/teams?'))return{data:{sports:[{leagues:[{teams:[{team:{id:'130',displayName:'Michigan Wolverines'}}]}]}]}};if(url.includes('/schedule'))return{data:{events:[{id:'game',date:new Date().toISOString()}]}};if(options.error)throw options.error;if(options.events)return{data:{events:options.events}};return{data:{events:[]}}}},fs:fakeFS,path,process:{env:{DATA_DIR:'/data'}},__dirname:'/app',console:{log(){},warn(){},error(){}},setInterval:()=>({}),clearInterval(){},setTimeout:()=>({}),clearTimeout(){},Date});api.startPolling=()=>{};return{api,files,requests};}
+function setup(files={},options={}) {const requests=[]; const fakeFS={readFileSync:p=>{if(!(p in files))throw Object.assign(new Error('missing'),{code:'ENOENT'});return files[p]},mkdirSync(){},writeFileSync:(p,s)=>files[p]=s,renameSync:(a,b)=>{files[b]=files[a];delete files[a]}}; const api=vm.runInNewContext(`${source}\nnew ScoreboardService()`,{axios:{get:async url=>{requests.push(url);if(url.includes('/teams?'))return{data:{sports:[{leagues:[{teams:[{team:{id:'130',displayName:'Michigan Wolverines'}}]}]}]}};if(url.includes('/schedule'))return{data:{events:[{id:'game',date:new Date().toISOString()}]}};if(options.error)throw options.error;if(options.events)return{data:{events:options.events}};return{data:{events:[]}}}},fs:fakeFS,path,process:{env:{DATA_DIR:'/data'}},__dirname:'/app',console:{log(...args){options.logs?.push(args.join(" "))},warn(){},error(){}},setInterval:()=>({}),clearInterval(){},setTimeout:()=>({}),clearTimeout(){},Date});api.startPolling=()=>{};return{api,files,requests};}
 function tracked(api,event='score',id=event){let count=0;api.registerFlow({id,name:id,trigger:{type:'sports_score',properties:{team:'Michigan Wolverines',sport:'football',league:'college-football',event}}},()=>count++);const t=api.trackedTeams.get(id);t.teamId='130';t.schedule=[{id:'game',date:new Date().toISOString()}];return{t,count:()=>count};}
 const event=(score,state='in',winner=false,id='game')=>({id,status:{type:{state}},competitions:[{competitors:[{team:{id:'130'},score:String(score),winner}]}]});
 const feed=(api,t,...events)=>api.processLeagueEvents(events,[t]);
@@ -21,3 +21,56 @@ test('429 respects Retry-After and blocks fallback requests and immediate retry'
 test('HTTP-date Retry-After is honored and repeated failures back off exponentially',()=>{const{api}=setup();api.deferLeague('nfl',{response:{status:429,headers:{'retry-after':new Date(Date.now()+180000).toUTCString()}}});assert.ok(api.backoffUntil.get('nfl')-Date.now()>178000);api.deferLeague('nfl',{message:'timeout'});assert.ok(api.backoffUntil.get('nfl')-Date.now()>119000);api.deferLeague('nfl',{message:'timeout'});assert.ok(api.backoffUntil.get('nfl')-Date.now()>239000);});
 test('NFL uses shared adaptive polling without college group filter',async()=>{const e=event(7);const{api,requests}=setup({}, {events:[e]});const x=tracked(api);x.t.trigger.properties.league='nfl';await api.poll();const url=requests.find(u=>u.includes('/scoreboard?'));assert.ok(url.includes('/football/nfl/'));assert.ok(!url.includes('groups='));});
 test('completed games stop making scoreboard requests',async()=>{const{api,requests}=setup();const x=tracked(api);feed(api,x.t,event(7,'post',true));await api.poll();assert.equal(requests.filter(u=>u.includes('/scoreboard?')).length,0);});
+
+test('pregame tracking starts two hours early with a five-minute league cadence',async()=>{
+  const e=event(0,'pre'); e.date=new Date(Date.now()+90*60*1000).toISOString();
+  const{api,requests}=setup({}, {events:[e]}); const x=tracked(api,'kickoff');
+  x.t.schedule=[{id:'game',date:e.date}]; x.t.fetchedAt=Date.now();
+  await api.poll();
+  assert.equal(requests.filter(u=>u.includes('/scoreboard?')).length,1);
+  assert.equal(x.count(),0);
+  assert.ok(api.nextPollAt.get('football/college-football')-Date.now()>299000);
+  const saved=Object.values(api.states)[0]; assert.equal(saved.state,'pre'); assert.equal(saved.kickoffHandled,false);
+  assert.ok(saved.firstObservedAt); assert.ok(saved.lastObservedAt);
+  feed(api,x.t,event(0)); assert.equal(x.count(),1);
+});
+test('games outside the two-hour tracking window do not request a scoreboard',async()=>{
+  const{api,requests}=setup(); const x=tracked(api,'kickoff');
+  x.t.schedule=[{id:'game',date:new Date(Date.now()+121*60*1000).toISOString()}];x.t.fetchedAt=Date.now();
+  await api.poll(); assert.equal(requests.filter(u=>u.includes('/scoreboard?')).length,0);
+});
+test('pregame cadence tightens to 30 seconds within fifteen minutes and for overdue starts',()=>{
+  const{api}=setup(); const x=tracked(api,'kickoff');const e=event(0,'pre');
+  for(const minutes of [14,0,-20]){e.date=new Date(Date.now()+minutes*60*1000).toISOString();assert.equal(api.pollDelay([e],[x.t]),30000);}
+});
+test('a saved pregame baseline survives a restart ninety minutes before kickoff',()=>{
+  const first=setup();const x=tracked(first.api,'kickoff');feed(first.api,x.t,event(0,'pre'));
+  const stamp=Object.values(first.api.states)[0].firstObservedAt;
+  const second=setup(first.files);const y=tracked(second.api,'kickoff');
+  feed(second.api,y.t,event(0,'pre'),event(0));assert.equal(y.count(),1);
+  assert.equal(Object.values(second.api.states)[0].firstObservedAt,stamp);
+  const third=setup(second.files);const z=tracked(third.api,'kickoff');feed(third.api,z.t,event(0));assert.equal(z.count(),0);
+});
+test('first live observation suppresses kickoff and subsequent points still fire',()=>{
+  const{api}=setup();const k=tracked(api,'kickoff');const s=tracked(api,'score');
+  api.processLeagueEvents([event(0)],[k.t,s.t]);assert.equal(k.count(),0);
+  api.processLeagueEvents([event(6)],[k.t,s.t]);assert.equal(k.count(),0);assert.equal(s.count(),1);
+});
+test('diagnostics identify baseline, transition, restart and suppressed initial live kickoff without routine spam',()=>{
+  const logs=[];const first=setup({}, {logs});const x=tracked(first.api,'kickoff');
+  const pre=event(0,'pre');pre.date=new Date().toISOString();pre.status.type.name='STATUS_SCHEDULED';
+  feed(first.api,x.t,pre,pre);
+  let observations=logs.filter(l=>l.startsWith('[Sports observation] ')).map(l=>JSON.parse(l.slice('[Sports observation] '.length)));
+  assert.equal(observations.length,1);assert.equal(observations[0].kind,'baseline');assert.equal(observations[0].kickoffDecision,'armed_waiting_for_live');
+  assert.equal(observations[0].gameId,'game');assert.equal(observations[0].scheduledStart,pre.date);assert.ok(observations[0].observedAt);
+  const live=event(0);live.status.type.name='STATUS_IN_PROGRESS';live.status.period=1;live.status.displayClock='15:00';
+  feed(first.api,x.t,live);
+  const change=JSON.parse(logs.filter(l=>l.startsWith('[Sports observation] ')).at(-1).slice('[Sports observation] '.length));
+  assert.equal(change.previousState,'pre');assert.equal(change.state,'in');assert.equal(change.kickoffDecision,'fire');assert.equal(change.period,1);assert.equal(change.clock,'15:00');
+  const restoredLogs=[];const second=setup(first.files,{logs:restoredLogs});const y=tracked(second.api,'kickoff');feed(second.api,y.t,live);
+  assert.ok(restoredLogs.some(l=>l.includes('Loaded 1 saved game checkpoints')));
+  const resumed=JSON.parse(restoredLogs.find(l=>l.startsWith('[Sports observation] ')).slice('[Sports observation] '.length));
+  assert.equal(resumed.kind,'resumed');assert.equal(resumed.kickoffDecision,'already_handled');assert.equal(y.count(),0);
+  const lateLogs=[];const late=setup({}, {logs:lateLogs});const z=tracked(late.api,'kickoff');feed(late.api,z.t,live);
+  assert.ok(lateLogs.some(l=>l.includes('suppressed_initial_live_observation')));assert.equal(z.count(),0);
+});
