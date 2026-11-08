@@ -3,7 +3,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { SportsScoreTrigger, Flow } from '../types';
 
-interface GameState { score: number; state: string; winHandled: boolean; kickoffHandled?: boolean; }
+interface GameState {
+  score: number; state: string; winHandled: boolean; kickoffHandled?: boolean;
+  firstObservedAt?: string; lastObservedAt?: string; statusName?: string;
+}
 interface TrackedTeam {
   flowId: string;
   trigger: SportsScoreTrigger;
@@ -22,11 +25,15 @@ export class ScoreboardService {
   private backoffUntil = new Map<string, number>();
   private failures = new Map<string, number>();
   private preferredDay = new Map<string, string>();
+  private observedGames = new Set<string>();
   private scheduleCache = new Map<string, { teamId: string; schedule: { id?: string; date: string }[]; fetchedAt: number }>();
   private statePath = path.join(process.env.DATA_DIR || path.join(__dirname, '../../'), 'sports-state.json');
 
   constructor() {
-    try { this.states = JSON.parse(fs.readFileSync(this.statePath, 'utf8')); }
+    try {
+      this.states = JSON.parse(fs.readFileSync(this.statePath, 'utf8'));
+      console.log(`[Sports checkpoints] Loaded ${Object.keys(this.states).length} saved game checkpoints`);
+    }
     catch (err: any) { if (err.code !== 'ENOENT') console.warn('Could not read sports checkpoints:', err.message); }
   }
 
@@ -98,11 +105,19 @@ export class ScoreboardService {
     let live = false;
     let halftime = false;
     let otherRelevant = false;
+    let nearKickoff = false;
     for (const team of teams) {
       for (const event of events) {
         if (!team.schedule.some(g => g.id ? g.id === event.id : Math.abs(Date.parse(g.date) - Date.parse(event.date)) < 12 * 60 * 60 * 1000)) continue;
         const status = event.status?.type;
-        if (status?.state !== 'in') { if (status?.state !== 'post') otherRelevant = true; continue; }
+        if (status?.state !== 'in') {
+          if (status?.state !== 'post') {
+            otherRelevant = true;
+            // Slow pregame checks establish a baseline early, then tighten near kickoff.
+            if (!Number.isFinite(Date.parse(event.date)) || Date.parse(event.date) - Date.now() <= 15 * 60 * 1000) nearKickoff = true;
+          }
+          continue;
+        }
         if (status.name === 'STATUS_HALFTIME') { halftime = true; continue; }
         live = true;
         // Only resolved ESPN team IDs are used for possession matching.
@@ -110,7 +125,8 @@ export class ScoreboardService {
       }
     }
     if (live) return 30000;
-    return halftime && !otherRelevant ? 60000 : 30000;
+    if (halftime) return nearKickoff ? 30000 : 60000;
+    return otherRelevant && !nearKickoff ? 5 * 60 * 1000 : 30000;
   }
 
   private deferLeague(league: string, err: any): void {
@@ -140,7 +156,7 @@ export class ScoreboardService {
             const props = team.trigger.properties;
             const key = [team.flowId, props.sport, props.league, team.teamId || props.team.trim().toLowerCase(), props.event || 'score', g.id].join(':');
             if (g.id && this.states[key]?.state === 'post') return false;
-            return Date.now() - Date.parse(g.date) >= -15 * 60 * 1000 && Date.now() - Date.parse(g.date) <= 8 * 60 * 60 * 1000;
+            return Date.now() - Date.parse(g.date) >= -2 * 60 * 60 * 1000 && Date.now() - Date.parse(g.date) <= 8 * 60 * 60 * 1000;
           });
           if (!active.length) continue;
           const key = `${team.trigger.properties.sport.toLowerCase()}/${team.trigger.properties.league.toLowerCase()}`;
@@ -221,8 +237,30 @@ export class ScoreboardService {
           : props.event === 'win'
           ? won && !previous.winHandled
           : !victoryReady && (state === 'in' || state === 'post') && score > previous.score);
+        const observedAt = new Date().toISOString();
+        const statusName = event.status?.type?.name || competition.status?.type?.name;
+        const firstThisRun = !this.observedGames.has(key);
+        if (firstThisRun || previous?.state !== state || previous?.statusName !== statusName || previous?.score !== score) {
+          console.log(`[Sports observation] ${JSON.stringify({
+            kind: !previous ? 'baseline' : firstThisRun ? 'resumed' : 'change',
+            observedAt, firstObservedAt: previous?.firstObservedAt || (!previous ? observedAt : undefined),
+            flowId: team.flowId, team: props.team, trigger: props.event || 'score', gameId: event.id,
+            scheduledStart: event.date, previousState: previous?.state, state, statusName,
+            period: event.status?.period ?? competition.status?.period,
+            clock: event.status?.displayClock ?? competition.status?.displayClock,
+            previousScore: previous?.score, score, fire,
+            kickoffDecision: props.event !== 'kickoff' ? undefined : fire ? 'fire'
+              : !previous && state === 'in' ? 'suppressed_initial_live_observation'
+              : !previous && state === 'post' ? 'suppressed_initial_completed_observation'
+              : previous?.kickoffHandled ? 'already_handled'
+              : state === 'pre' ? 'armed_waiting_for_live' : 'no_pregame_to_live_transition',
+          })}`);
+        }
+        this.observedGames.add(key);
         this.states[key] = { score: Math.max(previous?.score ?? score, score), state,
-          winHandled: previous?.winHandled || state === 'post', kickoffHandled: previous?.kickoffHandled || state !== 'pre' };
+          winHandled: previous?.winHandled || state === 'post', kickoffHandled: previous?.kickoffHandled || state !== 'pre',
+          firstObservedAt: previous?.firstObservedAt || (!previous ? observedAt : undefined),
+          lastObservedAt: observedAt, statusName };
         try { this.saveState(); }
         catch (err: any) { console.error('Cannot checkpoint sports event; skipping celebration:', err.message); continue; }
         if (fire) {

@@ -137,7 +137,7 @@ segment between imported canvases without leaving a second assignment behind.
 Sports Score triggers support `properties.event`: `score` (default, any score
 increase), `win` (ESPN confirmed final with this team marked winner), and `kickoff`
 (pregame to in-progress). The college-football feed includes all FBS games. Scores
-are polled from 15 minutes before kickoff through eight hours
+are tracked from two hours before kickoff through eight hours
 after the scheduled start; ESPN reporting adds its own delay.
 
 Each flow checkpoints game IDs, score high-water marks, kickoff and final state in
@@ -152,6 +152,8 @@ scheduled scene resumes, or lights turn off outside an active schedule. Sports
 flows do not repeat automatically. The same canvas uses the latest celebration
 if another sports event arrives before the first finishes.
 
+Pregame scoreboard checks run every five minutes, tightening to 30 seconds in the
+final 15 minutes before the listed start (and while a start is overdue).
 Polling adapts to the existing scoreboard response: 15 seconds while a monitored
 team has possession, 30 seconds otherwise (including missing possession), and 60
 seconds during halftime. Completed scheduled games stop polling. Score, win and
@@ -159,3 +161,10 @@ kickoff flows share league requests and cached team schedules. Once the correct
 daily feed is found, fallback dates are skipped. Throttling and network failures
 back off exponentially, respecting numeric or HTTP-date Retry-After headers.
 ESPN feed latency still applies; these intervals are client-side targets.
+
+`[Sports observation]` logs identify each flow and game, the first observation or
+resumed checkpoint, status/score changes, listed start, period/clock, and the
+kickoff decision. An initial live observation explicitly reports
+`suppressed_initial_live_observation`. Unchanged polls do not repeat these logs.
+New checkpoints retain first/last observation times and ESPN status names;
+legacy checkpoints remain compatible and do not invent a historical first-seen time.
